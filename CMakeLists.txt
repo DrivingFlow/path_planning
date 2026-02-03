@@ -13,14 +13,16 @@ find_package(nav_msgs REQUIRED)
 find_package(OpenCV REQUIRED)
 
 # Bridge + RRT library (no ROS)
+# Use OpenCV_LIBS / OpenCV_INCLUDE_DIRS for compatibility with Ubuntu's libopencv-dev (OpenCV config may not export OpenCV:: targets)
 add_library(path_planning_core
   src/occ_grid_bridge.cpp
   src/rrt_planner.cpp
 )
 target_include_directories(path_planning_core PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/src
+  ${OpenCV_INCLUDE_DIRS}
 )
-target_link_libraries(path_planning_core OpenCV::opencv_core OpenCV::opencv_imgproc OpenCV::opencv_imgcodecs OpenCV::opencv_calib3d)
+target_link_libraries(path_planning_core ${OpenCV_LIBS})
 
 # Path planner ROS2 node
 add_executable(path_planner_node src/path_planner_node.cpp)
