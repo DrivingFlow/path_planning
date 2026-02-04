@@ -117,6 +117,10 @@ def main():
         help="Goal pose (geometry_msgs/PoseStamped)",
     )
     parser.add_argument("--rate", type=float, default=10.0, help="Plot update rate (Hz)")
+    parser.add_argument("--view-col-min", type=int, default=-1, help="Min grid column to view")
+    parser.add_argument("--view-col-max", type=int, default=-1, help="Max grid column to view")
+    parser.add_argument("--view-row-min", type=int, default=-1, help="Min grid row to view")
+    parser.add_argument("--view-row-max", type=int, default=-1, help="Max grid row to view")
     args, _ = parser.parse_known_args()
 
     rclpy.init()
@@ -146,8 +150,29 @@ def main():
     goal_marker, = ax.plot([], [], "y*", markersize=14, label="Goal")
 
     im_occ = None
+    coord_text = ax.text(
+        0.02,
+        0.98,
+        "",
+        transform=ax.transAxes,
+        va="top",
+        ha="left",
+        fontsize=9,
+        bbox=dict(facecolor="white", alpha=0.6, edgecolor="none"),
+    )
+    last_mouse = {"x": None, "y": None}
 
-    def update_with_occ(frame):
+    def on_move(event):
+        if event.inaxes != ax:
+            last_mouse["x"] = None
+            last_mouse["y"] = None
+            return
+        last_mouse["x"] = event.xdata
+        last_mouse["y"] = event.ydata
+
+    fig.canvas.mpl_connect("motion_notify_event", on_move)
+
+    def update_with_occ(_frame):
         occ_data, path, waypoints, robot, goal = node.get_snapshot()
         nonlocal im_occ
 
@@ -218,14 +243,53 @@ def main():
             h, w = arr.shape
             all_x.extend([ox, ox + w * res])
             all_y.extend([oy, oy + h * res])
-        if all_x and all_y:
+
+        if occ_data is not None and (
+            args.view_col_min >= 0
+            or args.view_col_max >= 0
+            or args.view_row_min >= 0
+            or args.view_row_max >= 0
+        ):
+            col_min = args.view_col_min if args.view_col_min >= 0 else 0
+            col_max = args.view_col_max if args.view_col_max >= 0 else w - 1
+            row_min = args.view_row_min if args.view_row_min >= 0 else 0
+            row_max = args.view_row_max if args.view_row_max >= 0 else h - 1
+
+            col_min = max(0, min(col_min, w - 1))
+            col_max = max(0, min(col_max, w - 1))
+            row_min = max(0, min(row_min, h - 1))
+            row_max = max(0, min(row_max, h - 1))
+
+            x_min = ox + col_min * res
+            x_max = ox + (col_max + 1) * res
+            y_max = oy + (h - row_min) * res
+            y_min = oy + (h - 1 - row_max) * res
+
+            ax.set_xlim(x_min, x_max)
+            ax.set_ylim(y_min, y_max)
+        elif all_x and all_y:
             margin = 0.5
             ax.set_xlim(min(all_x) - margin, max(all_x) + margin)
             ax.set_ylim(min(all_y) - margin, max(all_y) + margin)
 
-        return line_path, line_waypoints, robot_marker, goal_marker
+        if occ_data is not None and last_mouse["x"] is not None and last_mouse["y"] is not None:
+            arr, ox, oy, res = occ_data
+            h, w = arr.shape
+            col = int((last_mouse["x"] - ox) / res)
+            row = h - 1 - int((last_mouse["y"] - oy) / res)
+            if 0 <= col < w and 0 <= row < h:
+                coord_text.set_text(
+                    f"col,row: {col}, {row}\n"
+                    f"x,y: {last_mouse['x']:.2f}, {last_mouse['y']:.2f}"
+                )
+            else:
+                coord_text.set_text("col,row: out of bounds")
+        else:
+            coord_text.set_text("")
 
-    ani = animation.FuncAnimation(
+        return line_path, line_waypoints, robot_marker, goal_marker, coord_text
+
+    _ = animation.FuncAnimation(
         fig, update_with_occ, interval=1000.0 / args.rate, blit=False, cache_frame_data=False
     )
     ax.legend(loc="upper right")

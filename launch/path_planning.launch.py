@@ -28,6 +28,10 @@ def generate_launch_description():
     visualize = LaunchConfiguration("visualize")
     viz_rate = LaunchConfiguration("viz_rate")
     visualizer_type = LaunchConfiguration("visualizer_type")
+    view_col_min = LaunchConfiguration("view_col_min")
+    view_col_max = LaunchConfiguration("view_col_max")
+    view_row_min = LaunchConfiguration("view_row_min")
+    view_row_max = LaunchConfiguration("view_row_max")
 
     return LaunchDescription(
         [
@@ -51,6 +55,10 @@ def generate_launch_description():
             DeclareLaunchArgument("visualize", default_value="True"),
             DeclareLaunchArgument("viz_rate", default_value="10.0"),
             DeclareLaunchArgument("visualizer_type", default_value="cpp"),
+            DeclareLaunchArgument("view_col_min", default_value="-1"),
+            DeclareLaunchArgument("view_col_max", default_value="-1"),
+            DeclareLaunchArgument("view_row_min", default_value="-1"),
+            DeclareLaunchArgument("view_row_max", default_value="-1"),
             Node(
                 package="path_planning",
                 executable="path_planner_node",
@@ -98,6 +106,14 @@ def generate_launch_description():
                     goal_topic,
                     "--rate",
                     viz_rate,
+                    "--view-col-min",
+                    view_col_min,
+                    "--view-col-max",
+                    view_col_max,
+                    "--view-row-min",
+                    view_row_min,
+                    "--view-row-max",
+                    view_row_max,
                 ],
                 condition=IfCondition(
                     PythonExpression([visualize, " and '", visualizer_type, "' == 'python'"])
@@ -116,6 +132,10 @@ def generate_launch_description():
                         "pose_topic": pose_topic,
                         "goal_topic": goal_topic,
                         "rate": viz_rate,
+                        "view_col_min": view_col_min,
+                        "view_col_max": view_col_max,
+                        "view_row_min": view_row_min,
+                        "view_row_max": view_row_max,
                     }
                 ],
                 condition=IfCondition(

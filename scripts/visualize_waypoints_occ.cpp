@@ -29,6 +29,10 @@ public:
         std::string pose_topic = declare_parameter<std::string>("pose_topic", "/pcl_pose");
         std::string goal_topic = declare_parameter<std::string>("goal_topic", "/move_base_simple/goal");
         rate_hz_ = declare_parameter<double>("rate", 10.0);
+        view_col_min_ = declare_parameter<int>("view_col_min", -1);
+        view_col_max_ = declare_parameter<int>("view_col_max", -1);
+        view_row_min_ = declare_parameter<int>("view_row_min", -1);
+        view_row_max_ = declare_parameter<int>("view_row_max", -1);
         sub_occ_ = create_subscription<nav_msgs::msg::OccupancyGrid>(
             occ_topic, 10, [this](const nav_msgs::msg::OccupancyGrid::SharedPtr msg) {
                 onOcc(msg);
@@ -62,6 +66,7 @@ public:
 
         cv::namedWindow(window_name_, cv::WINDOW_NORMAL);
         cv::resizeWindow(window_name_, 900, 900);
+        cv::setMouseCallback(window_name_, &WaypointsOccVisualizer::onMouse, this);
     }
 
 private:
@@ -106,6 +111,24 @@ private:
         return true;
     }
 
+    static void onMouse(int event, int x, int y, int, void* userdata) {
+        if (event != cv::EVENT_MOUSEMOVE) return;
+        auto* self = static_cast<WaypointsOccVisualizer*>(userdata);
+        std::lock_guard<std::mutex> lock(self->mouse_mutex_);
+        self->mouse_x_ = x;
+        self->mouse_y_ = y;
+        self->has_mouse_ = true;
+    }
+
+    void drawLabel(cv::Mat& img, const std::string& text) const {
+        int baseline = 0;
+        cv::Size text_size = cv::getTextSize(text, cv::FONT_HERSHEY_SIMPLEX, 0.45, 1, &baseline);
+        cv::Rect bg(5, 5, text_size.width + 8, text_size.height + baseline + 8);
+        cv::rectangle(img, bg, cv::Scalar(255, 255, 255), cv::FILLED);
+        cv::putText(img, text, cv::Point(9, 5 + text_size.height + 2),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.45, cv::Scalar(0, 0, 0), 1);
+    }
+
     void render() {
         OccData occ;
         std::vector<cv::Point2d> path;
@@ -143,15 +166,34 @@ private:
         cv::Mat vis;
         cv::cvtColor(img, vis, cv::COLOR_GRAY2BGR);
 
+        int col_min = 0;
+        int col_max = occ.width - 1;
+        int row_min = 0;
+        int row_max = occ.height - 1;
+        if (view_col_min_ >= 0) col_min = view_col_min_;
+        if (view_col_max_ >= 0) col_max = view_col_max_;
+        if (view_row_min_ >= 0) row_min = view_row_min_;
+        if (view_row_max_ >= 0) row_max = view_row_max_;
+
+        col_min = std::max(0, std::min(col_min, occ.width - 1));
+        col_max = std::max(0, std::min(col_max, occ.width - 1));
+        row_min = std::max(0, std::min(row_min, occ.height - 1));
+        row_max = std::max(0, std::min(row_max, occ.height - 1));
+        if (col_max < col_min) std::swap(col_min, col_max);
+        if (row_max < row_min) std::swap(row_min, row_max);
+
+        cv::Rect roi(col_min, row_min, col_max - col_min + 1, row_max - row_min + 1);
+        cv::Mat view = vis(roi);
+
         auto draw_polyline = [&](const std::vector<cv::Point2d>& pts, const cv::Scalar& color) {
             if (pts.size() < 2) return;
             std::vector<cv::Point> px;
             for (const auto& w : pts) {
                 cv::Point p;
-                if (worldToPixel(occ, w, p)) px.push_back(p);
+                if (worldToPixel(occ, w, p)) px.push_back(p - cv::Point(col_min, row_min));
             }
             for (size_t i = 1; i < px.size(); ++i) {
-                cv::line(vis, px[i - 1], px[i], color, 2);
+                cv::line(view, px[i - 1], px[i], color, 2);
             }
         };
 
@@ -160,25 +202,48 @@ private:
         for (const auto& w : waypoints) {
             cv::Point p;
             if (worldToPixel(occ, w, p)) {
-                cv::circle(vis, p, 3, cv::Scalar(0, 0, 255), -1);
+                cv::circle(view, p - cv::Point(col_min, row_min), 3, cv::Scalar(0, 0, 255), -1);
             }
         }
 
         if (robot.has_value()) {
             cv::Point p;
             if (worldToPixel(occ, robot.value(), p)) {
-                cv::circle(vis, p, 6, cv::Scalar(0, 255, 0), -1);
+                cv::circle(view, p - cv::Point(col_min, row_min), 6, cv::Scalar(0, 255, 0), -1);
             }
         }
 
         if (goal.has_value()) {
             cv::Point p;
             if (worldToPixel(occ, goal.value(), p)) {
-                cv::drawMarker(vis, p, cv::Scalar(0, 255, 255), cv::MARKER_STAR, 12, 2);
+                cv::drawMarker(view, p - cv::Point(col_min, row_min),
+                               cv::Scalar(0, 255, 255), cv::MARKER_STAR, 12, 2);
             }
         }
 
-        cv::imshow(window_name_, vis);
+        int mouse_x = -1;
+        int mouse_y = -1;
+        {
+            std::lock_guard<std::mutex> lock(mouse_mutex_);
+            if (has_mouse_) {
+                mouse_x = mouse_x_;
+                mouse_y = mouse_y_;
+            }
+        }
+        if (mouse_x >= 0 && mouse_y >= 0 &&
+            mouse_x < view.cols && mouse_y < view.rows) {
+            int col = col_min + mouse_x;
+            int row = row_min + mouse_y;
+            double x = occ.origin_x + col * occ.resolution;
+            double y = occ.origin_y + (occ.height - 1 - row) * occ.resolution;
+            drawLabel(view, "col,row: " + std::to_string(col) + ", " + std::to_string(row) +
+                              "  x,y: " + cv::format("%.2f, %.2f", x, y));
+        } else {
+            drawLabel(view, "col,row: out of bounds");
+        }
+
+        cv::resizeWindow(window_name_, view.cols, view.rows);
+        cv::imshow(window_name_, view);
         cv::waitKey(1);
     }
 
@@ -197,7 +262,16 @@ private:
     rclcpp::TimerBase::SharedPtr timer_;
 
     double rate_hz_ = 10.0;
+    int view_col_min_ = -1;
+    int view_col_max_ = -1;
+    int view_row_min_ = -1;
+    int view_row_max_ = -1;
     const std::string window_name_ = "Occupancy grid + waypoints (map frame)";
+
+    std::mutex mouse_mutex_;
+    int mouse_x_ = -1;
+    int mouse_y_ = -1;
+    bool has_mouse_ = false;
 };
 
 int main(int argc, char** argv) {
