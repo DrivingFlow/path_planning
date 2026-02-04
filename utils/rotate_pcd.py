@@ -93,11 +93,15 @@ if __name__ == "__main__":
 
     # -----------------------------
     # Create occupancy map PNG + YAML from rotated points
+    # Bounds from ALL leveled points (no z filter). Formula must match C++ OccGridBridge:
+    #   w = (int)((x_max - x_min) / res) + 1,  h = (int)((y_max - y_min) / res) + 1
+    # Use the same resolution (e.g. 0.05) as in path_planning.launch.py to avoid dimension mismatch.
     # -----------------------------
-    x_min, x_max = np.min(pts_leveled[:, 0]), np.max(pts_leveled[:, 0])
-    y_min, y_max = np.min(pts_leveled[:, 1]), np.max(pts_leveled[:, 1])
+    x_min, x_max = float(np.min(pts_leveled[:, 0])), float(np.max(pts_leveled[:, 0]))
+    y_min, y_max = float(np.min(pts_leveled[:, 1])), float(np.max(pts_leveled[:, 1]))
     w = int((x_max - x_min) / res) + 1
     h = int((y_max - y_min) / res) + 1
+    print(f"Grid bounds: x=[{x_min}, {x_max}], y=[{y_min}, {y_max}], res={res} -> size {w} x {h} (width x height)")
 
     grid = np.full((h, w), 255, dtype=np.uint8)  # white=free, black=occupied
 

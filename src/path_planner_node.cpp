@@ -95,6 +95,10 @@ private:
             RCLCPP_ERROR(get_logger(), "Failed to load map PCD: %s", map_pcd.c_str());
             return;
         }
+        RCLCPP_INFO(get_logger(),
+            "Map PCD bounds: x=[%.4f, %.4f], y=[%.4f, %.4f], res=%.4f -> grid %d x %d",
+            bridge_.xMin(), bridge_.xMax(), bridge_.yMin(), bridge_.yMax(),
+            res, bridge_.gridWidth(), bridge_.gridHeight());
         int pcd_grid_w = bridge_.gridWidth();
         int pcd_grid_h = bridge_.gridHeight();
         if (!bridge_.loadEditedMapPng(map_png)) {
@@ -108,6 +112,8 @@ private:
                 pcd_grid_w, pcd_grid_h, bridge_.gridWidth(), bridge_.gridHeight());
         }
         RCLCPP_INFO(get_logger(), "Bridge initialized: grid %d x %d", bridge_.gridWidth(), bridge_.gridHeight());
+        RCLCPP_INFO(get_logger(), "Bridge w_/h_ (gridWidth/gridHeight): %d x %d",
+            bridge_.gridWidth(), bridge_.gridHeight());
     }
 
     void onPointCloud(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
@@ -272,6 +278,9 @@ private:
         double z_min = get_parameter("z_min").as_double();
         double z_max = get_parameter("z_max").as_double();
         cv::Mat live_grid = bridge_.pointcloudToOccupancyGrid(live_pts, z_min, z_max);
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
+            "Live grid before overlay: %d x %d (cols x rows)",
+            live_grid.cols, live_grid.rows);
         cv::Mat combined = bridge_.mergeWithStaticMap(live_grid);
 
         // Publish current combined occupancy grid for visualization (map frame: origin + resolution)
