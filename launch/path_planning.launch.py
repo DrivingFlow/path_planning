@@ -41,6 +41,7 @@ def generate_launch_description():
             DeclareLaunchArgument("rrt_step_size", default_value="0.4"),
             DeclareLaunchArgument("rrt_goal_sample_rate", default_value="0.05"),
             DeclareLaunchArgument("replan_lookahead_distance", default_value="4.0"),
+            DeclareLaunchArgument("replan_interval_sec", default_value="1.0"),
             DeclareLaunchArgument("lidar_topic", default_value="/livox/lidar"),
             DeclareLaunchArgument("pose_topic", default_value="/pcl_pose"),
             DeclareLaunchArgument("goal_topic", default_value="/move_base_simple/goal"),
