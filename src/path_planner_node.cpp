@@ -95,9 +95,17 @@ private:
             RCLCPP_ERROR(get_logger(), "Failed to load map PCD: %s", map_pcd.c_str());
             return;
         }
+        int pcd_grid_w = bridge_.gridWidth();
+        int pcd_grid_h = bridge_.gridHeight();
         if (!bridge_.loadEditedMapPng(map_png)) {
             RCLCPP_ERROR(get_logger(), "Failed to load map PNG: %s", map_png.c_str());
             return;
+        }
+        if (bridge_.gridWidth() != pcd_grid_w || bridge_.gridHeight() != pcd_grid_h) {
+            RCLCPP_WARN(get_logger(),
+                "Dimension mismatch: map PCD grid is %d x %d but PNG is %d x %d. Using PNG dimensions. "
+                "Ensure the PNG was generated from the same PCD with the same resolution.",
+                pcd_grid_w, pcd_grid_h, bridge_.gridWidth(), bridge_.gridHeight());
         }
         RCLCPP_INFO(get_logger(), "Bridge initialized: grid %d x %d", bridge_.gridWidth(), bridge_.gridHeight());
     }
