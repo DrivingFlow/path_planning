@@ -31,8 +31,8 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
-            DeclareLaunchArgument("map_pcd_path", default_value="/home/dog22/path_planning_ws/src/path_planning/utils/plab_4_rotated.pcd"),
-            DeclareLaunchArgument("map_png_path", default_value="/home/dog22/path_planning_ws/src/path_planning/utils/plab_4_rotated.png"),
+            DeclareLaunchArgument("map_pcd_path", default_value="/home/dog22/path_planning_ws/src/path_planning/utils/plab_4-1_rotated.pcd"),
+            DeclareLaunchArgument("map_png_path", default_value="/home/dog22/path_planning_ws/src/path_planning/utils/plab_4-1_rotated.png"),
             DeclareLaunchArgument("resolution", default_value="0.05"),
             DeclareLaunchArgument("z_min", default_value="0.1"),
             DeclareLaunchArgument("z_max", default_value="2.0"),
