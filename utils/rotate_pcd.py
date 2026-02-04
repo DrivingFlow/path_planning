@@ -36,7 +36,7 @@ if __name__ == "__main__":
     # -----------------------------
     # Inputs (edit these as needed)
     # -----------------------------
-    pcd_path = r"C:\Users\ianrp\Desktop\Assignments\Fifth\ENPH 479\path_planning\utils\plab_4.pcd"
+    pcd_path = r"C:\Users\ianrp\Desktop\Assignments\Fifth\ENPH 479\path_planning\utils\plab_4-1.pcd"
     out_path = r"C:\Users\ianrp\Desktop\Assignments\Fifth\ENPH 479\path_planning\utils"
 
     # Match defaults in `src/path_planner_node.cpp`

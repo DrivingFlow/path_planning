@@ -54,6 +54,8 @@ public:
         // Lookahead distance in meters: if obstacle intersection is beyond this distance along path, don't replan
         // (assumes moving objects will be gone by the time robot reaches that point)
         declare_parameter<double>("replan_lookahead_distance", 4.0);
+        // Force replan every N seconds (e.g. when manually driving so path drifts; 0 = disable periodic replan)
+        declare_parameter<double>("replan_interval_sec", 5.0);
 
         std::string map_pcd = get_parameter("map_pcd_path").as_string();
         std::string map_png = get_parameter("map_png_path").as_string();
@@ -293,6 +295,17 @@ private:
                 RCLCPP_INFO(get_logger(), "Path intersects obstacles within %.2f m, replanning...", lookahead);
             }
         }
+        // Force replan periodically (e.g. when manually driving so path drifts from robot)
+        if (!needs_replan) {
+            double interval_sec = get_parameter("replan_interval_sec").as_double();
+            if (interval_sec > 0.0) {
+                double elapsed = (now() - last_plan_time_).seconds();
+                if (last_plan_time_.nanoseconds() == 0 || elapsed >= interval_sec) {
+                    needs_replan = true;
+                    RCLCPP_DEBUG(get_logger(), "Replan clock (%.1f s interval): replanning.", interval_sec);
+                }
+            }
+        }
 
         // Only plan if we need a new path
         if (!needs_replan) {
@@ -361,6 +374,8 @@ private:
             current_path_ = waypoints;
         }
 
+        last_plan_time_ = now();
+
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Published %zu waypoints.", waypoints.size());
     }
 
@@ -380,6 +395,7 @@ private:
     double start_yaw_ = 0;
     bool have_pose_ = false, have_goal_ = false;
     std::vector<std::array<double, 2>> current_path_;  // Current planned path in world coordinates
+    rclcpp::Time last_plan_time_{0};  // Time of last successful plan (for replan clock)
 };
 
 int main(int argc, char** argv) {

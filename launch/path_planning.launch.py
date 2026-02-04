@@ -16,6 +16,7 @@ def generate_launch_description():
     rrt_step_size = LaunchConfiguration("rrt_step_size")
     rrt_goal_sample_rate = LaunchConfiguration("rrt_goal_sample_rate")
     replan_lookahead_distance = LaunchConfiguration("replan_lookahead_distance")
+    replan_interval_sec = LaunchConfiguration("replan_interval_sec")
 
     lidar_topic = LaunchConfiguration("lidar_topic")
     pose_topic = LaunchConfiguration("pose_topic")
@@ -66,6 +67,7 @@ def generate_launch_description():
                         "rrt_step_size": rrt_step_size,
                         "rrt_goal_sample_rate": rrt_goal_sample_rate,
                         "replan_lookahead_distance": replan_lookahead_distance,
+                        "replan_interval_sec": replan_interval_sec,
                     }
                 ],
                 remappings=[
