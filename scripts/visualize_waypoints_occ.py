@@ -13,11 +13,11 @@ import matplotlib.animation as animation
 import rclpy
 from rclpy.node import Node
 from nav_msgs.msg import Path, OccupancyGrid
-from geometry_msgs.msg import PoseWithCovarianceStamped
+from geometry_msgs.msg import PoseWithCovarianceStamped, PoseStamped
 
 
 class WaypointsOccVisualizer(Node):
-    def __init__(self, occ_topic, path_topic, waypoints_topic, pose_topic, rate_hz):
+    def __init__(self, occ_topic, path_topic, waypoints_topic, pose_topic, goal_topic, rate_hz):
         super().__init__("waypoints_occ_visualizer")
         self.rate_hz = rate_hz
         self.lock = threading.Lock()
@@ -27,6 +27,7 @@ class WaypointsOccVisualizer(Node):
         self.path_poses = []
         self.waypoints_poses = []
         self.robot_pose = None
+        self.goal_pose = None
 
         self.sub_occ = self.create_subscription(
             OccupancyGrid, occ_topic, self._cb_occ, 10
@@ -43,6 +44,13 @@ class WaypointsOccVisualizer(Node):
             )
         else:
             self.sub_pose = None
+
+        if goal_topic:
+            self.sub_goal = self.create_subscription(
+                PoseStamped, goal_topic, self._cb_goal, 10
+            )
+        else:
+            self.sub_goal = None
 
     def _cb_occ(self, msg):
         with self.lock:
@@ -71,13 +79,19 @@ class WaypointsOccVisualizer(Node):
             p = msg.pose.pose.position
             self.robot_pose = (p.x, p.y)
 
+    def _cb_goal(self, msg):
+        with self.lock:
+            p = msg.pose.position
+            self.goal_pose = (p.x, p.y)
+
     def get_snapshot(self):
         with self.lock:
             occ = self.occ_data
             path = list(self.path_poses)
             waypoints = list(self.waypoints_poses)
             robot = self.robot_pose
-        return occ, path, waypoints, robot
+            goal = self.goal_pose
+        return occ, path, waypoints, robot, goal
 
 
 def run_ros_spin(node):
@@ -98,8 +112,12 @@ def main():
         "--pose-topic", default="/pcl_pose",
         help="Robot pose (geometry_msgs/PoseWithCovarianceStamped)",
     )
+    parser.add_argument(
+        "--goal-topic", default="/move_base_simple/goal",
+        help="Goal pose (geometry_msgs/PoseStamped)",
+    )
     parser.add_argument("--rate", type=float, default=10.0, help="Plot update rate (Hz)")
-    args = parser.parse_args()
+    args, _ = parser.parse_known_args()
 
     rclpy.init()
     node = WaypointsOccVisualizer(
@@ -107,6 +125,7 @@ def main():
         args.path_topic,
         args.waypoints_topic,
         args.pose_topic or None,
+        args.goal_topic or None,
         args.rate,
     )
 
@@ -124,11 +143,12 @@ def main():
     line_path, = ax.plot([], [], "b-", linewidth=2, label="Path")
     line_waypoints, = ax.plot([], [], "ro", markersize=6, label="Waypoints")
     robot_marker, = ax.plot([], [], "go", markersize=12, label="Robot")
+    goal_marker, = ax.plot([], [], "y*", markersize=14, label="Goal")
 
     im_occ = None
 
     def update_with_occ(frame):
-        occ_data, path, waypoints, robot = node.get_snapshot()
+        occ_data, path, waypoints, robot, goal = node.get_snapshot()
         nonlocal im_occ
 
         if occ_data is not None:
@@ -174,6 +194,12 @@ def main():
         else:
             robot_marker.set_visible(False)
 
+        if goal is not None:
+            goal_marker.set_data([goal[0]], [goal[1]])
+            goal_marker.set_visible(True)
+        else:
+            goal_marker.set_visible(False)
+
         all_x, all_y = [], []
         if path:
             all_x.extend([p[0] for p in path])
@@ -184,6 +210,9 @@ def main():
         if robot:
             all_x.append(robot[0])
             all_y.append(robot[1])
+        if goal:
+            all_x.append(goal[0])
+            all_y.append(goal[1])
         if occ_data is not None:
             arr, ox, oy, res = occ_data
             h, w = arr.shape
@@ -194,7 +223,7 @@ def main():
             ax.set_xlim(min(all_x) - margin, max(all_x) + margin)
             ax.set_ylim(min(all_y) - margin, max(all_y) + margin)
 
-        return line_path, line_waypoints, robot_marker
+        return line_path, line_waypoints, robot_marker, goal_marker
 
     ani = animation.FuncAnimation(
         fig, update_with_occ, interval=1000.0 / args.rate, blit=False, cache_frame_data=False

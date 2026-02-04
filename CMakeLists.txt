@@ -10,6 +10,7 @@ find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
+find_package(tf2 REQUIRED)
 find_package(OpenCV REQUIRED)
 
 # Bridge + RRT library (no ROS)
@@ -28,14 +29,26 @@ target_link_libraries(path_planning_core ${OpenCV_LIBS})
 add_executable(path_planner_node src/path_planner_node.cpp)
 target_include_directories(path_planner_node PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(path_planner_node path_planning_core)
-ament_target_dependencies(path_planner_node rclcpp sensor_msgs geometry_msgs nav_msgs)
+ament_target_dependencies(path_planner_node rclcpp sensor_msgs geometry_msgs nav_msgs tf2)
+
+add_executable(visualize_waypoints_occ_cpp scripts/visualize_waypoints_occ.cpp)
+target_include_directories(visualize_waypoints_occ_cpp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(visualize_waypoints_occ_cpp ${OpenCV_LIBS})
+ament_target_dependencies(visualize_waypoints_occ_cpp rclcpp nav_msgs geometry_msgs)
 
 install(TARGETS path_planner_node
+  DESTINATION lib/${PROJECT_NAME})
+
+install(TARGETS visualize_waypoints_occ_cpp
   DESTINATION lib/${PROJECT_NAME})
 
 install(PROGRAMS
   scripts/visualize_waypoints_occ.py
   DESTINATION lib/${PROJECT_NAME}
+)
+
+install(DIRECTORY launch
+  DESTINATION share/${PROJECT_NAME}
 )
 
 if(BUILD_TESTING)

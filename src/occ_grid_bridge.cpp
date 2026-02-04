@@ -88,8 +88,14 @@ bool OccGridBridge::loadEditedMapPng(const std::string& png_path) {
     if (img.empty()) return false;
     // File: white=free (255), black=obstacle (0). We store 0=free, 255=obstacle for RRT.
     static_map_ = 255 - img;
-    if (w_ > 0 && h_ > 0 && (img.cols != w_ || img.rows != h_))
-        return false;
+    if (w_ > 0 && h_ > 0 && (img.cols != w_ || img.rows != h_)) {
+        // If PNG size differs from bounds-derived grid, adjust bounds to match PNG size.
+        // This avoids hard failure when grid sizing differs by rounding or off-by-one.
+        w_ = img.cols;
+        h_ = img.rows;
+        x_max_ = x_min_ + (w_ - 1) * res_;
+        y_max_ = y_min_ + (h_ - 1) * res_;
+    }
     return true;
 }
 

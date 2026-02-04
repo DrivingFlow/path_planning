@@ -23,6 +23,9 @@
 #include <cstring>
 #include <cmath>
 
+#include <tf2/LinearMath/Quaternion.h>
+#include <tf2/LinearMath/Matrix3x3.h>
+
 #include "occ_grid_bridge.hpp"
 #include "rrt_planner.hpp"
 
@@ -123,6 +126,13 @@ private:
         std::lock_guard<std::mutex> lock(mutex_);
         start_x_ = msg->pose.pose.position.x;
         start_y_ = msg->pose.pose.position.y;
+        start_z_ = msg->pose.pose.position.z;
+
+        const auto& q = msg->pose.pose.orientation;
+        tf2::Quaternion quat(q.x, q.y, q.z, q.w);
+        double roll, pitch, yaw;
+        tf2::Matrix3x3(quat).getRPY(roll, pitch, yaw);
+        start_yaw_ = yaw;
         have_pose_ = true;
     }
 
@@ -131,6 +141,7 @@ private:
         goal_x_ = msg->pose.position.x;
         goal_y_ = msg->pose.position.y;
         have_goal_ = true;
+        RCLCPP_INFO(get_logger(), "Received goal pose: x=%.3f, y=%.3f", goal_x_, goal_y_);
     }
 
     /**
@@ -204,27 +215,74 @@ private:
         return false;
     }
 
+    std::vector<std::array<float, 3>> transformPointsToMap(
+        const std::vector<std::array<float, 3>>& points_lidar,
+        double tx, double ty, double tz, double yaw) const {
+        if (points_lidar.empty()) return {};
+        std::vector<std::array<float, 3>> out;
+        out.reserve(points_lidar.size());
+        double c = std::cos(yaw);
+        double s = std::sin(yaw);
+        for (const auto& pt : points_lidar) {
+            double x = pt[0];
+            double y = pt[1];
+            double z = pt[2];
+            double x_m = c * x - s * y + tx;
+            double y_m = s * x + c * y + ty;
+            double z_m = z + tz;
+            out.push_back({{static_cast<float>(x_m), static_cast<float>(y_m), static_cast<float>(z_m)}});
+        }
+        return out;
+    }
+
     void runPlanningCycle() {
         if (!bridge_.isInitialized()) return;
 
         std::vector<std::array<float, 3>> live_pts;
         double start_x, start_y, goal_x, goal_y;
+        double start_z, start_yaw;
         bool have_pose, have_goal;
         std::vector<std::array<double, 2>> current_path;
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            if (!have_pose_ || !have_goal_) return;
             live_pts = live_points_;
             start_x = start_x_; start_y = start_y_;
+            start_z = start_z_; start_yaw = start_yaw_;
             goal_x = goal_x_; goal_y = goal_y_;
             have_pose = have_pose_; have_goal = have_goal_;
             current_path = current_path_;  // Copy current path
+        }
+
+        if (have_pose) {
+            live_pts = transformPointsToMap(live_pts, start_x, start_y, start_z, start_yaw);
+        } else {
+            live_pts.clear();
         }
 
         double z_min = get_parameter("z_min").as_double();
         double z_max = get_parameter("z_max").as_double();
         cv::Mat live_grid = bridge_.pointcloudToOccupancyGrid(live_pts, z_min, z_max);
         cv::Mat combined = bridge_.mergeWithStaticMap(live_grid);
+
+        // Publish current combined occupancy grid for visualization (map frame: origin + resolution)
+        nav_msgs::msg::OccupancyGrid occ_msg;
+        occ_msg.header.frame_id = "map";
+        occ_msg.header.stamp = now();
+        occ_msg.info.resolution = static_cast<float>(bridge_.resolution());
+        occ_msg.info.width = combined.cols;
+        occ_msg.info.height = combined.rows;
+        occ_msg.info.origin.position.x = bridge_.xMin();
+        occ_msg.info.origin.position.y = bridge_.yMin();
+        occ_msg.info.origin.position.z = 0.0;
+        occ_msg.info.origin.orientation.w = 1.0;
+        occ_msg.data.resize(combined.rows * combined.cols);
+        for (size_t i = 0; i < occ_msg.data.size(); ++i)
+            occ_msg.data[i] = combined.data[i] ? 100 : 0;  // OccupancyGrid: 0=free, 100=occupied
+        pub_occ_grid_->publish(occ_msg);
+
+        if (!have_pose || !have_goal) {
+            return;
+        }
 
         // Check if current path intersects obstacles within lookahead distance
         bool needs_replan = current_path.empty();
@@ -303,22 +361,6 @@ private:
             current_path_ = waypoints;
         }
 
-        // Publish current combined occupancy grid for visualization (map frame: origin + resolution)
-        nav_msgs::msg::OccupancyGrid occ_msg;
-        occ_msg.header.frame_id = "map";
-        occ_msg.header.stamp = now();
-        occ_msg.info.resolution = static_cast<float>(bridge_.resolution());
-        occ_msg.info.width = combined.cols;
-        occ_msg.info.height = combined.rows;
-        occ_msg.info.origin.position.x = bridge_.xMin();
-        occ_msg.info.origin.position.y = bridge_.yMin();
-        occ_msg.info.origin.position.z = 0.0;
-        occ_msg.info.origin.orientation.w = 1.0;
-        occ_msg.data.resize(combined.rows * combined.cols);
-        for (size_t i = 0; i < occ_msg.data.size(); ++i)
-            occ_msg.data[i] = combined.data[i] ? 100 : 0;  // OccupancyGrid: 0=free, 100=occupied
-        pub_occ_grid_->publish(occ_msg);
-
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Published %zu waypoints.", waypoints.size());
     }
 
@@ -334,6 +376,8 @@ private:
     std::mutex mutex_;
     std::vector<std::array<float, 3>> live_points_;
     double start_x_ = 0, start_y_ = 0, goal_x_ = 0, goal_y_ = 0;
+    double start_z_ = 0;
+    double start_yaw_ = 0;
     bool have_pose_ = false, have_goal_ = false;
     std::vector<std::array<double, 2>> current_path_;  // Current planned path in world coordinates
 };
