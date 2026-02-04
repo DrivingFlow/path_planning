@@ -29,7 +29,7 @@ bool loadPcdFile(const std::string& path, std::vector<std::array<double, 3>>& ou
     out_points.reserve(static_cast<size_t>(num_points));
 
     if (binary) {
-        float buf[3];
+        float buf[6];
         for (int i = 0; i < num_points && f.read(reinterpret_cast<char*>(buf), sizeof(buf)); ++i) {
             out_points.push_back({{static_cast<double>(buf[0]), static_cast<double>(buf[1]), static_cast<double>(buf[2])}});
         }
