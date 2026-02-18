@@ -6,7 +6,11 @@ RRTPlanner::RRTPlanner(const cv::Mat& grid_img,
                        double step_size,
                        double goal_sample_rate,
                        int robot_radius,
-                       double rewire_gamma)
+                       double rewire_gamma,
+                       int sample_col_min,
+                       int sample_col_max,
+                       int sample_row_min,
+                       int sample_row_max)
     : grid_(grid_img.clone()),
       step_size_(step_size),
       goal_sample_rate_(goal_sample_rate),
@@ -15,6 +19,10 @@ RRTPlanner::RRTPlanner(const cv::Mat& grid_img,
       uniform_dist_(0.0, 1.0) {
     h_ = grid_.rows;
     w_ = grid_.cols;
+    sample_col_min_ = sample_col_min;
+    sample_col_max_ = sample_col_max;
+    sample_row_min_ = sample_row_min;
+    sample_row_max_ = sample_row_max;
     cv::Mat binary = grid_ >= 50;
     int kernel_size = 2 * robot_radius + 1;
     cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(kernel_size, kernel_size));
@@ -72,8 +80,18 @@ bool RRTPlanner::collisionFree(const cv::Point2f& a, const cv::Point2f& b) const
 }
 
 cv::Point2f RRTPlanner::uniformSample() const {
-    std::uniform_real_distribution<double> x_dist(0.0, w_);
-    std::uniform_real_distribution<double> y_dist(0.0, h_);
+    double x_lo = 0.0, x_hi = static_cast<double>(w_);
+    double y_lo = 0.0, y_hi = static_cast<double>(h_);
+    if (sample_col_min_ >= 0 && sample_col_max_ >= 0) {
+        x_lo = static_cast<double>(std::max(0, sample_col_min_));
+        x_hi = static_cast<double>(std::min(w_ - 1, sample_col_max_)) + 1.0;
+    }
+    if (sample_row_min_ >= 0 && sample_row_max_ >= 0) {
+        y_lo = static_cast<double>(std::max(0, sample_row_min_));
+        y_hi = static_cast<double>(std::min(h_ - 1, sample_row_max_)) + 1.0;
+    }
+    std::uniform_real_distribution<double> x_dist(x_lo, x_hi);
+    std::uniform_real_distribution<double> y_dist(y_lo, y_hi);
     return cv::Point2f(static_cast<float>(x_dist(rng_)), static_cast<float>(y_dist(rng_)));
 }
 

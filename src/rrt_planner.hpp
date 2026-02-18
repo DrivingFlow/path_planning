@@ -20,11 +20,16 @@ struct Node {
 
 class RRTPlanner {
 public:
+    /** Sampling bounds: -1 means use full grid (0..w-1, 0..h-1). */
     RRTPlanner(const cv::Mat& grid_img,
                double step_size = 8.0,
                double goal_sample_rate = 0.05,
                int robot_radius = 5,
-               double rewire_gamma = 30.0);
+               double rewire_gamma = 30.0,
+               int sample_col_min = -1,
+               int sample_col_max = -1,
+               int sample_row_min = -1,
+               int sample_row_max = -1);
 
     /** Plan from start to goal (in grid coords: x=col, y=row). Returns path as grid indices. */
     std::vector<cv::Point2i> plan(const cv::Point2f& start, const cv::Point2f& goal,
@@ -47,6 +52,7 @@ private:
     cv::Mat grid_;
     cv::Mat occ_;
     int h_, w_;
+    int sample_col_min_, sample_col_max_, sample_row_min_, sample_row_max_;
     double step_size_;
     double goal_sample_rate_;
     double rewire_gamma_;

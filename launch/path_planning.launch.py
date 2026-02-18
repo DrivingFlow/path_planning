@@ -33,6 +33,12 @@ def generate_launch_description():
     view_row_min = LaunchConfiguration("view_row_min")
     view_row_max = LaunchConfiguration("view_row_max")
 
+    sample_col_min = LaunchConfiguration("sample_col_min")
+    sample_col_max = LaunchConfiguration("sample_col_max")
+    sample_row_min = LaunchConfiguration("sample_row_min")
+    sample_row_max = LaunchConfiguration("sample_row_max")
+    goal_in_pixels = LaunchConfiguration("goal_in_pixels")
+
     return LaunchDescription(
         [
             DeclareLaunchArgument("map_pcd_path", default_value="/home/dog22/path_planning_ws/src/path_planning/utils/plab_4-1_rotated.pcd"),
@@ -59,6 +65,16 @@ def generate_launch_description():
             DeclareLaunchArgument("view_col_max", default_value="-1"),
             DeclareLaunchArgument("view_row_min", default_value="-1"),
             DeclareLaunchArgument("view_row_max", default_value="-1"),
+            DeclareLaunchArgument("sample_col_min", default_value="-1",
+                description="RRT sampling min col (grid index); -1 = full grid"),
+            DeclareLaunchArgument("sample_col_max", default_value="-1",
+                description="RRT sampling max col (grid index); -1 = full grid"),
+            DeclareLaunchArgument("sample_row_min", default_value="-1",
+                description="RRT sampling min row (grid index); -1 = full grid"),
+            DeclareLaunchArgument("sample_row_max", default_value="-1",
+                description="RRT sampling max row (grid index); -1 = full grid"),
+            DeclareLaunchArgument("goal_in_pixels", default_value="False",
+                description="If True, /goal_pose x,y are grid col,row; else world (m)"),
             Node(
                 package="path_planning",
                 executable="path_planner_node",
@@ -77,6 +93,11 @@ def generate_launch_description():
                         "rrt_goal_sample_rate": rrt_goal_sample_rate,
                         "replan_lookahead_distance": replan_lookahead_distance,
                         "replan_interval_sec": replan_interval_sec,
+                        "sample_col_min": sample_col_min,
+                        "sample_col_max": sample_col_max,
+                        "sample_row_min": sample_row_min,
+                        "sample_row_max": sample_row_max,
+                        "goal_in_pixels": goal_in_pixels,
                     }
                 ],
                 remappings=[

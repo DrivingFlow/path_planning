@@ -78,19 +78,50 @@ if __name__ == "__main__":
     valid = (x_idx >= 0) & (x_idx < w) & (y_idx >= 0) & (y_idx < h)
     grid[y_idx[valid], x_idx[valid]] = 0  # black = occupied
 
+    save_png = False
+    save_3ch = True  # set to False to disable saving the 3-channel file
     # Save PNG and YAML
-    plt.imsave(os.path.join(out_path, f"{map_name}.png"), grid, cmap="gray", origin="upper")
+    if save_png:
+        plt.imsave(os.path.join(out_path, f"{map_name}.png"), grid, cmap="gray", origin="upper")
 
-    map_dict = {
-        "image": f"{map_name}.png",
-        "resolution": res,
-        "origin": [float(x_min), float(y_min), 0.0],
-        "occupied_thresh": 0.6,
-        "free_thresh": 0.3,
-        "negate": 0
-    }
+        map_dict = {
+            "image": f"{map_name}.png",
+            "resolution": res,
+            "origin": [float(x_min), float(y_min), 0.0],
+            "occupied_thresh": 0.6,
+            "free_thresh": 0.3,
+            "negate": 0
+        }
 
-    with open(os.path.join(out_path, f"{map_name}.yaml"), "w") as f:
-        yaml.dump(map_dict, f, default_flow_style=None)
+        with open(os.path.join(out_path, f"{map_name}.yaml"), "w") as f:
+            yaml.dump(map_dict, f, default_flow_style=None)
 
-    print(f"Saved occupancy map: {map_name}.png")
+        print(f"Saved occupancy map: {map_name}.png")
+
+    # Optional: save a 3-channel representation (X, Y, occupancy) as a new file
+    # First channel: real X coordinate for each pixel
+    # Second channel: real Y coordinate for each pixel
+    # Third channel: occupancy value (0=occupied, 255=free) as in `grid`
+    if save_3ch:
+        # X increases with column index j; Y increases with row index from bottom to top
+        # Note: grid indexing uses origin at upper-left, so convert accordingly
+        # For pixel at (i, j) in grid (i row, j col):
+        # x = x_min + j * res
+        # y = y_min + (h - 1 - i) * res
+        j_coords = np.arange(w)
+        i_coords = np.arange(h)
+        x_vals = x_min + j_coords * res
+        y_vals = y_min + (h - 1 - i_coords) * res
+
+        X = np.tile(x_vals[np.newaxis, :], (h, 1))
+        Y = np.tile(y_vals[:, np.newaxis], (1, w))
+
+        # Stack into a float32 array: (h, w, 3)
+        three_ch = np.zeros((h, w, 3), dtype=np.float32)
+        three_ch[:, :, 0] = X
+        three_ch[:, :, 1] = Y
+        three_ch[:, :, 2] = grid.astype(np.float32)
+
+        out_3ch_path = os.path.join(out_path, f"{map_name}_3ch.npy")
+        np.save(out_3ch_path, three_ch)
+        print(f"Saved 3-channel occupancy array: {os.path.basename(out_3ch_path)}")

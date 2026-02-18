@@ -56,6 +56,13 @@ public:
         declare_parameter<double>("replan_lookahead_distance", 4.0);
         // Force replan every N seconds (e.g. when manually driving so path drifts; 0 = disable periodic replan)
         declare_parameter<double>("replan_interval_sec", 5.0);
+        // RRT sampling bounds (grid indices); -1 = use full grid
+        declare_parameter<int>("sample_col_min", -1);
+        declare_parameter<int>("sample_col_max", -1);
+        declare_parameter<int>("sample_row_min", -1);
+        declare_parameter<int>("sample_row_max", -1);
+        // If true, /goal_pose x,y are interpreted as grid col,row; else as world (m)
+        declare_parameter<bool>("goal_in_pixels", false);
 
         std::string map_pcd = get_parameter("map_pcd_path").as_string();
         std::string map_png = get_parameter("map_png_path").as_string();
@@ -338,12 +345,23 @@ private:
         double step_size_m = get_parameter("rrt_step_size").as_double();
         double step_size_px = step_size_m / resolution;  // Convert meters to pixels
         double goal_rate = get_parameter("rrt_goal_sample_rate").as_double();
+        int sample_col_min = get_parameter("sample_col_min").as_int();
+        int sample_col_max = get_parameter("sample_col_max").as_int();
+        int sample_row_min = get_parameter("sample_row_min").as_int();
+        int sample_row_max = get_parameter("sample_row_max").as_int();
+        bool goal_in_pixels = get_parameter("goal_in_pixels").as_bool();
 
-        path_planning::RRTPlanner planner(combined, step_size_px, goal_rate, robot_radius_px, 30.0);
+        path_planning::RRTPlanner planner(combined, step_size_px, goal_rate, robot_radius_px, 30.0,
+                                         sample_col_min, sample_col_max, sample_row_min, sample_row_max);
 
         int start_col, start_row, goal_col, goal_row;
         bridge_.worldToGrid(start_x, start_y, start_col, start_row);
-        bridge_.worldToGrid(goal_x, goal_y, goal_col, goal_row);
+        if (goal_in_pixels) {
+            goal_col = static_cast<int>(std::round(goal_x));
+            goal_row = static_cast<int>(std::round(goal_y));
+        } else {
+            bridge_.worldToGrid(goal_x, goal_y, goal_col, goal_row);
+        }
 
         cv::Point2f start_g(static_cast<float>(start_col), static_cast<float>(start_row));
         cv::Point2f goal_g(static_cast<float>(goal_col), static_cast<float>(goal_row));
