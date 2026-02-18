@@ -13,7 +13,7 @@ def generate_launch_description():
     z_max = LaunchConfiguration("z_max")
     robot_radius = LaunchConfiguration("robot_radius")
     rrt_iterations = LaunchConfiguration("rrt_iterations")
-    rrt_step_size = LaunchConfiguration("rrt_step_size")
+    step_size = LaunchConfiguration("step_size")
     rrt_goal_sample_rate = LaunchConfiguration("rrt_goal_sample_rate")
     replan_lookahead_distance = LaunchConfiguration("replan_lookahead_distance")
     replan_interval_sec = LaunchConfiguration("replan_interval_sec")
@@ -58,7 +58,7 @@ def generate_launch_description():
             # Number of RRT iterations for path planning
             DeclareLaunchArgument("rrt_iterations", default_value="10000"),
             # Step size for RRT tree expansion (meters)
-            DeclareLaunchArgument("rrt_step_size", default_value="0.4"),
+            DeclareLaunchArgument("step_size", default_value="0.4"),
             # Probability of sampling the goal during RRT planning
             DeclareLaunchArgument("rrt_goal_sample_rate", default_value="0.05"),
             # Lookahead distance for replanning (meters)
@@ -119,7 +119,7 @@ def generate_launch_description():
                         "z_max": z_max,
                         "robot_radius": robot_radius,
                         "rrt_iterations": rrt_iterations,
-                        "rrt_step_size": rrt_step_size,
+                        "step_size": step_size,
                         "rrt_goal_sample_rate": rrt_goal_sample_rate,
                         "replan_lookahead_distance": replan_lookahead_distance,
                         "replan_interval_sec": replan_interval_sec,

@@ -50,7 +50,7 @@ public:
         // Number of RRT* planning iterations (more = better path but slower)
         declare_parameter<int>("rrt_iterations", 10000);
         // RRT* step size in meters (distance to extend tree per iteration, converted to pixels internally)
-        declare_parameter<double>("rrt_step_size", 0.4);
+        declare_parameter<double>("step_size", 0.4);
         // Goal sample rate (probability 0-1): fraction of iterations that sample the goal directly
         // Higher values (e.g., 0.1) bias toward goal, lower (e.g., 0.01) explore more randomly
         declare_parameter<double>("rrt_goal_sample_rate", 0.05);
@@ -349,7 +349,7 @@ private:
         double robot_radius_m = get_parameter("robot_radius").as_double();
         int robot_radius_px = static_cast<int>(std::round(robot_radius_m / resolution));
         int n_iter = get_parameter("rrt_iterations").as_int();
-        double step_size_m = get_parameter("rrt_step_size").as_double();
+        double step_size_m = get_parameter("step_size").as_double();
         double step_size_px = step_size_m / resolution;  // Convert meters to pixels
         double goal_rate = get_parameter("rrt_goal_sample_rate").as_double();
         int sample_col_min = get_parameter("sample_col_min").as_int();
