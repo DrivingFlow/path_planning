@@ -38,6 +38,8 @@ def generate_launch_description():
     sample_row_min = LaunchConfiguration("sample_row_min")
     sample_row_max = LaunchConfiguration("sample_row_max")
     goal_in_pixels = LaunchConfiguration("goal_in_pixels")
+    planner = LaunchConfiguration("planner")
+    planner_settings_str = LaunchConfiguration("planner_settings", default="0.1,0.1,0.2,50")
 
     return LaunchDescription(
         [
@@ -75,6 +77,10 @@ def generate_launch_description():
                 description="RRT sampling max row (grid index); -1 = full grid"),
             DeclareLaunchArgument("goal_in_pixels", default_value="False",
                 description="If True, /goal_pose x,y are grid col,row; else world (m)"),
+            DeclareLaunchArgument("planner", default_value="rrt",
+                description="Path planner: 'rrt' or 'astar' (A* with clearance energy)"),
+            DeclareLaunchArgument("planner_settings", default_value="0.1,0.1,0.2,50",
+                description="A* only: [beta_valley,smooth_alpha,smooth_beta,smooth_n_iter]; RRT ignores"),
             Node(
                 package="path_planning",
                 executable="path_planner_node",
@@ -98,6 +104,8 @@ def generate_launch_description():
                         "sample_row_min": sample_row_min,
                         "sample_row_max": sample_row_max,
                         "goal_in_pixels": goal_in_pixels,
+                        "planner": planner,
+                        "planner_settings": planner_settings_str,
                     }
                 ],
                 remappings=[

@@ -18,6 +18,7 @@ find_package(OpenCV REQUIRED)
 add_library(path_planning_core
   src/occ_grid_bridge.cpp
   src/rrt_planner.cpp
+  src/astar_energy_planner.cpp
 )
 target_include_directories(path_planning_core PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/src

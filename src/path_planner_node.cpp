@@ -22,12 +22,15 @@
 #include <mutex>
 #include <cstring>
 #include <cmath>
+#include <string>
+#include <sstream>
 
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2/LinearMath/Matrix3x3.h>
 
 #include "occ_grid_bridge.hpp"
 #include "rrt_planner.hpp"
+#include "astar_energy_planner.hpp"
 
 // Placeholder: replace with your waypoint message type if different (e.g. nav_msgs/Path or custom)
 using WaypointArray = std::vector<std::array<double, 2>>;
@@ -63,6 +66,10 @@ public:
         declare_parameter<int>("sample_row_max", -1);
         // If true, /goal_pose x,y are interpreted as grid col,row; else as world (m)
         declare_parameter<bool>("goal_in_pixels", false);
+        // Planner algorithm: "rrt" or "astar" (A* with clearance energy)
+        declare_parameter<std::string>("planner", "rrt");
+        // A* only: [beta_valley, smooth_alpha, smooth_beta, smooth_n_iter]; RRT ignores this (string or double array)
+        declare_parameter("planner_settings", std::string("0.1,0.1,0.2,50"));
 
         std::string map_pcd = get_parameter("map_pcd_path").as_string();
         std::string map_png = get_parameter("map_png_path").as_string();
@@ -350,9 +357,7 @@ private:
         int sample_row_min = get_parameter("sample_row_min").as_int();
         int sample_row_max = get_parameter("sample_row_max").as_int();
         bool goal_in_pixels = get_parameter("goal_in_pixels").as_bool();
-
-        path_planning::RRTPlanner planner(combined, step_size_px, goal_rate, robot_radius_px, 30.0,
-                                         sample_col_min, sample_col_max, sample_row_min, sample_row_max);
+        std::string planner_type = get_parameter("planner").as_string();
 
         int start_col, start_row, goal_col, goal_row;
         bridge_.worldToGrid(start_x, start_y, start_col, start_row);
@@ -375,9 +380,39 @@ private:
             return;
         }
 
-        std::vector<cv::Point2i> path_idx = planner.plan(start_g, goal_g, n_iter, false, false);
+        std::vector<cv::Point2i> path_idx;
+        if (planner_type == "astar" || planner_type == "astar_energy") {
+            std::vector<double> ps;
+            rclcpp::Parameter param = get_parameter("planner_settings");
+            if (param.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE_ARRAY) {
+                ps = param.as_double_array();
+            } else {
+                std::string s = param.as_string();
+                std::istringstream ss(s);
+                std::string token;
+                while (std::getline(ss, token, ',') && ps.size() < 4) {
+                    try {
+                        ps.push_back(std::stod(token));
+                    } catch (...) { break; }
+                }
+            }
+            double beta_v = (ps.size() > 0) ? ps[0] : 0.1;
+            double smooth_alpha = (ps.size() > 1) ? ps[1] : 0.1;
+            double smooth_beta = (ps.size() > 2) ? ps[2] : 0.2;
+            int smooth_n_iter = (ps.size() > 3) ? static_cast<int>(ps[3]) : 50;
+            path_planning::AStarEnergyPlanner planner(combined, robot_radius_px);
+            path_idx = planner.plan(start_g, goal_g, beta_v, smooth_alpha, smooth_beta,
+                                    smooth_n_iter, step_size_px);
+        } else {
+            path_planning::RRTPlanner planner(combined, step_size_px, goal_rate, robot_radius_px, 30.0,
+                                             sample_col_min, sample_col_max, sample_row_min, sample_row_max);
+            path_idx = planner.plan(start_g, goal_g, n_iter, false, false);
+        }
+
         if (path_idx.empty()) {
-            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "RRT found no path.");
+            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+                "%s found no path.",
+                (planner_type == "astar" || planner_type == "astar_energy") ? "A*" : "RRT");
             return;
         }
 
