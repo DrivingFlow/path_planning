@@ -43,44 +43,68 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
+            # Path to the PCD map file
             DeclareLaunchArgument("map_pcd_path", default_value="/home/dog22/path_planning_ws/src/path_planning/utils/plab_4-1_rotated.pcd"),
+            # Path to the PNG occupancy grid map file
             DeclareLaunchArgument("map_png_path", default_value="/home/dog22/path_planning_ws/src/path_planning/utils/plab_4-1_rotated.png"),
+            # Resolution of the occupancy grid (meters per cell)
             DeclareLaunchArgument("resolution", default_value="0.05"),
+            # Minimum z-coordinate for obstacle detection (meters)
             DeclareLaunchArgument("z_min", default_value="0.1"),
+            # Maximum z-coordinate for obstacle detection (meters)
             DeclareLaunchArgument("z_max", default_value="2.0"),
+            # Robot radius for collision checking (meters)
             DeclareLaunchArgument("robot_radius", default_value="0.0"),
+            # Number of RRT iterations for path planning
             DeclareLaunchArgument("rrt_iterations", default_value="10000"),
+            # Step size for RRT tree expansion (meters)
             DeclareLaunchArgument("rrt_step_size", default_value="0.4"),
+            # Probability of sampling the goal during RRT planning
             DeclareLaunchArgument("rrt_goal_sample_rate", default_value="0.05"),
+            # Lookahead distance for replanning (meters)
             DeclareLaunchArgument("replan_lookahead_distance", default_value="4.0"),
+            # Time interval between replanning updates (seconds)
             DeclareLaunchArgument("replan_interval_sec", default_value="1.0"),
+            # Topic name for LIDAR point cloud input
             DeclareLaunchArgument("lidar_topic", default_value="/livox/lidar"),
+            # Topic name for robot pose input
             DeclareLaunchArgument("pose_topic", default_value="/pcl_pose"),
+            # Topic name for goal pose input
             DeclareLaunchArgument("goal_topic", default_value="/move_base_simple/goal"),
+            # Topic name for publishing planned path
             DeclareLaunchArgument("planned_path_topic", default_value="/planned_path"),
+            # Topic name for publishing waypoints
             DeclareLaunchArgument("waypoints_topic", default_value="/waypoints"),
+            # Topic name for publishing occupancy grid
             DeclareLaunchArgument("occupancy_grid_topic", default_value="/occupancy_grid"),
+            # Enable visualization of path and occupancy grid
             DeclareLaunchArgument("visualize", default_value="True"),
+            # Visualization update rate (Hz)
             DeclareLaunchArgument("viz_rate", default_value="10.0"),
+            # Visualizer type: 'cpp' or 'python'
             DeclareLaunchArgument("visualizer_type", default_value="cpp"),
+            # Minimum column for visualization view; -1 = full grid width
             DeclareLaunchArgument("view_col_min", default_value="-1"),
+            # Maximum column for visualization view; -1 = full grid width
             DeclareLaunchArgument("view_col_max", default_value="-1"),
+            # Minimum row for visualization view; -1 = full grid height
             DeclareLaunchArgument("view_row_min", default_value="-1"),
+            # Maximum row for visualization view; -1 = full grid height
             DeclareLaunchArgument("view_row_max", default_value="-1"),
-            DeclareLaunchArgument("sample_col_min", default_value="-1",
-                description="RRT sampling min col (grid index); -1 = full grid"),
-            DeclareLaunchArgument("sample_col_max", default_value="-1",
-                description="RRT sampling max col (grid index); -1 = full grid"),
-            DeclareLaunchArgument("sample_row_min", default_value="-1",
-                description="RRT sampling min row (grid index); -1 = full grid"),
-            DeclareLaunchArgument("sample_row_max", default_value="-1",
-                description="RRT sampling max row (grid index); -1 = full grid"),
-            DeclareLaunchArgument("goal_in_pixels", default_value="False",
-                description="If True, /goal_pose x,y are grid col,row; else world (m)"),
-            DeclareLaunchArgument("planner", default_value="rrt",
-                description="Path planner: 'rrt' or 'astar' (A* with clearance energy)"),
-            DeclareLaunchArgument("planner_settings", default_value="0.1,0.1,0.2,50",
-                description="A* only: [beta_valley,smooth_alpha,smooth_beta,smooth_n_iter]; RRT ignores"),
+            # RRT sampling min col (grid index); -1 = full grid
+            DeclareLaunchArgument("sample_col_min", default_value="-1"),
+            # RRT sampling max col (grid index); -1 = full grid
+            DeclareLaunchArgument("sample_col_max", default_value="-1"),
+            # RRT sampling min row (grid index); -1 = full grid
+            DeclareLaunchArgument("sample_row_min", default_value="-1"),
+            # RRT sampling max row (grid index); -1 = full grid
+            DeclareLaunchArgument("sample_row_max", default_value="-1"),
+            # If True, /goal_pose x,y are grid col,row; else world (m)
+            DeclareLaunchArgument("goal_in_pixels", default_value="False"),
+            # Path planner: 'rrt' or 'astar' (A* with clearance energy)
+            DeclareLaunchArgument("planner", default_value="rrt"),
+            # A* only: [beta_valley,smooth_alpha,smooth_beta,smooth_n_iter]; RRT ignores
+            DeclareLaunchArgument("planner_settings", default_value="0.1,0.1,0.2,50"),
             Node(
                 package="path_planning",
                 executable="path_planner_node",
