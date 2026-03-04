@@ -58,6 +58,7 @@ public:
                 [this](const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
                     onGoal(msg);
                 });
+            pub_goal_ = create_publisher<geometry_msgs::msg::PoseStamped>(goal_topic, 10);
         }
 
         timer_ = create_wall_timer(
@@ -67,6 +68,7 @@ public:
         cv::namedWindow(window_name_, cv::WINDOW_NORMAL);
         cv::resizeWindow(window_name_, 900, 900);
         cv::setMouseCallback(window_name_, &WaypointsOccVisualizer::onMouse, this);
+        RCLCPP_INFO(get_logger(), "Left-click on the visualization to set a goal!");
     }
 
 private:
@@ -111,13 +113,29 @@ private:
         return true;
     }
 
+    cv::Point2d pixelToWorld(const OccData& occ, int col, int row) const {
+        double x = occ.origin_x + col * occ.resolution;
+        double y = occ.origin_y + (occ.height - 1 - row) * occ.resolution;
+        return cv::Point2d(x, y);
+    }
+
     static void onMouse(int event, int x, int y, int, void* userdata) {
-        if (event != cv::EVENT_MOUSEMOVE) return;
         auto* self = static_cast<WaypointsOccVisualizer*>(userdata);
-        std::lock_guard<std::mutex> lock(self->mouse_mutex_);
-        self->mouse_x_ = x;
-        self->mouse_y_ = y;
-        self->has_mouse_ = true;
+        
+        if (event == cv::EVENT_LBUTTONDOWN) {
+            std::lock_guard<std::mutex> lock(self->mouse_mutex_);
+            self->click_x_ = x;
+            self->click_y_ = y;
+            self->has_click_ = true;
+            return;
+        }
+        
+        if (event == cv::EVENT_MOUSEMOVE) {
+            std::lock_guard<std::mutex> lock(self->mouse_mutex_);
+            self->mouse_x_ = x;
+            self->mouse_y_ = y;
+            self->has_mouse_ = true;
+        }
     }
 
     void drawLabel(cv::Mat& img, const std::string& text) const {
@@ -221,6 +239,38 @@ private:
             }
         }
 
+        // Handle click to set goal
+        int click_x = -1;
+        int click_y = -1;
+        {
+            std::lock_guard<std::mutex> lock(mouse_mutex_);
+            if (has_click_) {
+                click_x = click_x_;
+                click_y = click_y_;
+                has_click_ = false;
+            }
+        }
+        if (click_x >= 0 && click_y >= 0 && click_x < view.cols && click_y < view.rows && pub_goal_) {
+            int col = col_min + click_x;
+            int row = row_min + click_y;
+            cv::Point2d world_pos = pixelToWorld(occ, col, row);
+            
+            auto goal_msg = geometry_msgs::msg::PoseStamped();
+            goal_msg.header.stamp = now();
+            goal_msg.header.frame_id = "map";
+            goal_msg.pose.position.x = world_pos.x;
+            goal_msg.pose.position.y = world_pos.y;
+            goal_msg.pose.position.z = 0.0;
+            goal_msg.pose.orientation.w = 1.0;
+            
+            pub_goal_->publish(goal_msg);
+            RCLCPP_INFO(get_logger(), "Goal set to (%.2f, %.2f)", world_pos.x, world_pos.y);
+            
+            // Update local goal for visualization
+            std::lock_guard<std::mutex> lock(mutex_);
+            goal_pose_ = world_pos;
+        }
+
         int mouse_x = -1;
         int mouse_y = -1;
         {
@@ -259,6 +309,7 @@ private:
     rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr sub_waypoints_;
     rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr sub_pose_;
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr sub_goal_;
+    rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pub_goal_;
     rclcpp::TimerBase::SharedPtr timer_;
 
     double rate_hz_ = 10.0;
@@ -272,6 +323,9 @@ private:
     int mouse_x_ = -1;
     int mouse_y_ = -1;
     bool has_mouse_ = false;
+    int click_x_ = -1;
+    int click_y_ = -1;
+    bool has_click_ = false;
 };
 
 int main(int argc, char** argv) {

@@ -52,7 +52,7 @@ def generate_launch_description():
             # Minimum z-coordinate for obstacle detection (meters)
             DeclareLaunchArgument("z_min", default_value="0.1"),
             # Maximum z-coordinate for obstacle detection (meters)
-            DeclareLaunchArgument("z_max", default_value="2.0"),
+            DeclareLaunchArgument("z_max", default_value="0.6"),
             # Robot radius for collision checking (meters)
             DeclareLaunchArgument("robot_radius", default_value="0.0"),
             # Number of RRT iterations for path planning
@@ -84,25 +84,25 @@ def generate_launch_description():
             # Visualizer type: 'cpp' or 'python'
             DeclareLaunchArgument("visualizer_type", default_value="cpp"),
             # Minimum column for visualization view; -1 = full grid width
-            DeclareLaunchArgument("view_col_min", default_value="-1"),
+            DeclareLaunchArgument("view_col_min", default_value="375"),
             # Maximum column for visualization view; -1 = full grid width
-            DeclareLaunchArgument("view_col_max", default_value="-1"),
+            DeclareLaunchArgument("view_col_max", default_value="800"),
             # Minimum row for visualization view; -1 = full grid height
-            DeclareLaunchArgument("view_row_min", default_value="-1"),
+            DeclareLaunchArgument("view_row_min", default_value="75"),
             # Maximum row for visualization view; -1 = full grid height
-            DeclareLaunchArgument("view_row_max", default_value="-1"),
+            DeclareLaunchArgument("view_row_max", default_value="730"),
             # RRT sampling min col (grid index); -1 = full grid
-            DeclareLaunchArgument("sample_col_min", default_value="-1"),
+            DeclareLaunchArgument("sample_col_min", default_value="375"),
             # RRT sampling max col (grid index); -1 = full grid
-            DeclareLaunchArgument("sample_col_max", default_value="-1"),
+            DeclareLaunchArgument("sample_col_max", default_value="800"),
             # RRT sampling min row (grid index); -1 = full grid
-            DeclareLaunchArgument("sample_row_min", default_value="-1"),
+            DeclareLaunchArgument("sample_row_min", default_value="75"),
             # RRT sampling max row (grid index); -1 = full grid
-            DeclareLaunchArgument("sample_row_max", default_value="-1"),
+            DeclareLaunchArgument("sample_row_max", default_value="730"),
             # If True, /goal_pose x,y are grid col,row; else world (m)
             DeclareLaunchArgument("goal_in_pixels", default_value="False"),
             # Path planner: 'rrt' or 'astar' (A* with clearance energy)
-            DeclareLaunchArgument("planner", default_value="rrt"),
+            DeclareLaunchArgument("planner", default_value="astar"),
             # A* only: [beta_valley,smooth_alpha,smooth_beta,smooth_n_iter]; RRT ignores
             DeclareLaunchArgument("planner_settings", default_value="0.1,0.1,0.2,50"),
             Node(
