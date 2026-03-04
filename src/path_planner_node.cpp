@@ -70,6 +70,8 @@ public:
         declare_parameter<std::string>("planner", "rrt");
         // A* only: [beta_valley, smooth_alpha, smooth_beta, smooth_n_iter]; RRT ignores this (string or double array)
         declare_parameter("planner_settings", std::string("0.1,0.1,0.2,50"));
+        // If true, assume live lidar is already in map frame; skip pose transform (for testing)
+        declare_parameter<bool>("live_scan_in_map_frame", false);
 
         std::string map_pcd = get_parameter("map_pcd_path").as_string();
         std::string map_png = get_parameter("map_png_path").as_string();
@@ -283,11 +285,12 @@ private:
             current_path = current_path_;  // Copy current path
         }
 
-        if (have_pose) {
+        if (have_pose && !get_parameter("live_scan_in_map_frame").as_bool()) {
             live_pts = transformPointsToMap(live_pts, start_x, start_y, start_z, start_yaw);
-        } else {
+        } else if (!get_parameter("live_scan_in_map_frame").as_bool()) {
             live_pts.clear();
         }
+        // If live_scan_in_map_frame is true, use live_pts as-is (already in map frame)
 
         double z_min = get_parameter("z_min").as_double();
         double z_max = get_parameter("z_max").as_double();

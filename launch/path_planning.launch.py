@@ -40,6 +40,7 @@ def generate_launch_description():
     goal_in_pixels = LaunchConfiguration("goal_in_pixels")
     planner = LaunchConfiguration("planner")
     planner_settings_str = LaunchConfiguration("planner_settings", default="0.1,0.1,0.2,50")
+    live_scan_in_map_frame = LaunchConfiguration("live_scan_in_map_frame", default="False")
 
     return LaunchDescription(
         [
@@ -105,6 +106,8 @@ def generate_launch_description():
             DeclareLaunchArgument("planner", default_value="astar"),
             # A* only: [beta_valley,smooth_alpha,smooth_beta,smooth_n_iter]; RRT ignores
             DeclareLaunchArgument("planner_settings", default_value="0.1,0.1,0.2,50"),
+            DeclareLaunchArgument("live_scan_in_map_frame", default_value="True",
+                description="If True, assume live lidar is already in map frame; skip pose transform"),
             Node(
                 package="path_planning",
                 executable="path_planner_node",
@@ -130,6 +133,7 @@ def generate_launch_description():
                         "goal_in_pixels": goal_in_pixels,
                         "planner": planner,
                         "planner_settings": planner_settings_str,
+                        "live_scan_in_map_frame": live_scan_in_map_frame,
                     }
                 ],
                 remappings=[
