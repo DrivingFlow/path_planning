@@ -33,6 +33,7 @@ public:
         view_col_max_ = declare_parameter<int>("view_col_max", -1);
         view_row_min_ = declare_parameter<int>("view_row_min", -1);
         view_row_max_ = declare_parameter<int>("view_row_max", -1);
+        show_energy_map_ = declare_parameter<bool>("show_energy_map", true);
         sub_occ_ = create_subscription<nav_msgs::msg::OccupancyGrid>(
             occ_topic, 10, [this](const nav_msgs::msg::OccupancyGrid::SharedPtr msg) {
                 onOcc(msg);
@@ -184,6 +185,28 @@ private:
         cv::Mat vis;
         cv::cvtColor(img, vis, cv::COLOR_GRAY2BGR);
 
+        // Optional: build a simple "energy" map as distance-to-obstacle heatmap
+        cv::Mat energy_color;
+        if (show_energy_map_) {
+            cv::Mat binary_inv(occ.height, occ.width, CV_8UC1);
+            for (int r = 0; r < occ.height; ++r) {
+                for (int c = 0; c < occ.width; ++c) {
+                    int idx = r * occ.width + c;
+                    int8_t val = occ.data[idx];
+                    // Treat 0 as free, >=50 (e.g. 100) as obstacle, unknown as obstacle
+                    bool free_cell = (val >= 0 && val < 50);
+                    binary_inv.at<uchar>(r, c) = free_cell ? 255 : 0;
+                }
+            }
+            cv::Mat dist;
+            cv::distanceTransform(binary_inv, dist, cv::DIST_L2, cv::DIST_MASK_PRECISE);
+            cv::Mat dist_norm;
+            cv::normalize(dist, dist_norm, 0, 255, cv::NORM_MINMAX);
+            dist_norm.convertTo(dist_norm, CV_8UC1);
+            energy_color = cv::Mat(occ.height, occ.width, CV_8UC3);
+            cv::applyColorMap(dist_norm, energy_color, cv::COLORMAP_JET);
+        }
+
         int col_min = 0;
         int col_max = occ.width - 1;
         int row_min = 0;
@@ -201,7 +224,11 @@ private:
         if (row_max < row_min) std::swap(row_min, row_max);
 
         cv::Rect roi(col_min, row_min, col_max - col_min + 1, row_max - row_min + 1);
-        cv::Mat view = vis(roi);
+        cv::Mat view_occ = vis(roi);
+        cv::Mat view_energy;
+        if (show_energy_map_ && !energy_color.empty()) {
+            view_energy = energy_color(roi);
+        }
 
         auto draw_polyline = [&](const std::vector<cv::Point2d>& pts, const cv::Scalar& color) {
             if (pts.size() < 2) return;
@@ -211,7 +238,7 @@ private:
                 if (worldToPixel(occ, w, p)) px.push_back(p - cv::Point(col_min, row_min));
             }
             for (size_t i = 1; i < px.size(); ++i) {
-                cv::line(view, px[i - 1], px[i], color, 2);
+                cv::line(view_occ, px[i - 1], px[i], color, 2);
             }
         };
 
@@ -219,22 +246,22 @@ private:
 
         for (const auto& w : waypoints) {
             cv::Point p;
-            if (worldToPixel(occ, w, p)) {
-                cv::circle(view, p - cv::Point(col_min, row_min), 3, cv::Scalar(0, 0, 255), -1);
+                if (worldToPixel(occ, w, p)) {
+                    cv::circle(view_occ, p - cv::Point(col_min, row_min), 3, cv::Scalar(0, 0, 255), -1);
             }
         }
 
         if (robot.has_value()) {
             cv::Point p;
-            if (worldToPixel(occ, robot.value(), p)) {
-                cv::circle(view, p - cv::Point(col_min, row_min), 6, cv::Scalar(0, 255, 0), -1);
+                if (worldToPixel(occ, robot.value(), p)) {
+                    cv::circle(view_occ, p - cv::Point(col_min, row_min), 6, cv::Scalar(0, 255, 0), -1);
             }
         }
 
         if (goal.has_value()) {
             cv::Point p;
-            if (worldToPixel(occ, goal.value(), p)) {
-                cv::drawMarker(view, p - cv::Point(col_min, row_min),
+                if (worldToPixel(occ, goal.value(), p)) {
+                    cv::drawMarker(view_occ, p - cv::Point(col_min, row_min),
                                cv::Scalar(0, 255, 255), cv::MARKER_STAR, 12, 2);
             }
         }
@@ -250,7 +277,11 @@ private:
                 has_click_ = false;
             }
         }
-        if (click_x >= 0 && click_y >= 0 && click_x < view.cols && click_y < view.rows && pub_goal_) {
+        int occ_width = view_occ.cols;
+        int occ_height = view_occ.rows;
+
+        if (click_x >= 0 && click_y >= 0 &&
+            click_x < occ_width && click_y < occ_height && pub_goal_) {
             int col = col_min + click_x;
             int row = row_min + click_y;
             cv::Point2d world_pos = pixelToWorld(occ, col, row);
@@ -281,19 +312,27 @@ private:
             }
         }
         if (mouse_x >= 0 && mouse_y >= 0 &&
-            mouse_x < view.cols && mouse_y < view.rows) {
+            mouse_x < occ_width && mouse_y < occ_height) {
             int col = col_min + mouse_x;
             int row = row_min + mouse_y;
             double x = occ.origin_x + col * occ.resolution;
             double y = occ.origin_y + (occ.height - 1 - row) * occ.resolution;
-            drawLabel(view, "col,row: " + std::to_string(col) + ", " + std::to_string(row) +
+            drawLabel(view_occ, "col,row: " + std::to_string(col) + ", " + std::to_string(row) +
                               "  x,y: " + cv::format("%.2f, %.2f", x, y));
         } else {
-            drawLabel(view, "col,row: out of bounds");
+            drawLabel(view_occ, "col,row: out of bounds");
         }
 
-        cv::resizeWindow(window_name_, view.cols, view.rows);
-        cv::imshow(window_name_, view);
+        cv::Mat combined;
+        if (show_energy_map_ && !view_energy.empty()) {
+            // Put occupancy on the left, energy (clearance heatmap) on the right
+            cv::hconcat(view_occ, view_energy, combined);
+        } else {
+            combined = view_occ;
+        }
+
+        cv::resizeWindow(window_name_, combined.cols, combined.rows);
+        cv::imshow(window_name_, combined);
         cv::waitKey(1);
     }
 
@@ -317,6 +356,7 @@ private:
     int view_col_max_ = -1;
     int view_row_min_ = -1;
     int view_row_max_ = -1;
+    bool show_energy_map_ = true;
     const std::string window_name_ = "Occupancy grid + waypoints (map frame)";
 
     std::mutex mouse_mutex_;
