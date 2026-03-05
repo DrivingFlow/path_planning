@@ -185,7 +185,8 @@ private:
         cv::Mat vis;
         cv::cvtColor(img, vis, cv::COLOR_GRAY2BGR);
 
-        // Optional: build a simple "energy" map as distance-to-obstacle heatmap
+        // Optional: build an "energy" map that matches occupancy_grid_planning_energy_opt.py:
+        // distance transform of free space visualized with a viridis-style colormap.
         cv::Mat energy_color;
         if (show_energy_map_) {
             cv::Mat binary_inv(occ.height, occ.width, CV_8UC1);
@@ -193,26 +194,28 @@ private:
                 for (int c = 0; c < occ.width; ++c) {
                     int idx = r * occ.width + c;
                     int8_t val = occ.data[idx];
-                    // Treat 0 as free, >=50 (e.g. 100) as obstacle, unknown as obstacle
-                    bool free_cell = (val >= 0 && val < 50);
+                    // OccupancyGrid: 0 = free, >0 (e.g., 100 or -1) treated as obstacle.
+                    bool free_cell = (val == 0);
                     binary_inv.at<uchar>(r, c) = free_cell ? 255 : 0;
                 }
             }
             cv::Mat dist;
             cv::distanceTransform(binary_inv, dist, cv::DIST_L2, cv::DIST_MASK_PRECISE);
-            // Clip very large distances so the colormap uses its full range near obstacles
-            double max_val = 0.0;
-            cv::minMaxLoc(dist, nullptr, &max_val);
-            double clip = std::min(max_val, 8.0);  // ~8px clearance cap
-            cv::Mat dist_clipped = dist.clone();
-            if (clip > 0.0) {
-                cv::threshold(dist_clipped, dist_clipped, clip, clip, cv::THRESH_TRUNC);
+
+            double min_val = 0.0, max_val = 0.0;
+            cv::minMaxLoc(dist, &min_val, &max_val);
+
+            cv::Mat dist_norm_u8;
+            if (max_val > 0.0) {
+                // Scale so that the maximum clearance uses the top of the colormap,
+                // similar to matplotlib imshow(planner.dist, cmap="viridis").
+                dist.convertTo(dist_norm_u8, CV_8UC1, 255.0 / max_val);
+            } else {
+                dist_norm_u8 = cv::Mat::zeros(occ.height, occ.width, CV_8UC1);
             }
-            cv::Mat dist_norm;
-            cv::normalize(dist_clipped, dist_norm, 0, 255, cv::NORM_MINMAX);
-            dist_norm.convertTo(dist_norm, CV_8UC1);
+
             energy_color = cv::Mat(occ.height, occ.width, CV_8UC3);
-            cv::applyColorMap(dist_norm, energy_color, cv::COLORMAP_TURBO);
+            cv::applyColorMap(dist_norm_u8, energy_color, cv::COLORMAP_VIRIDIS);
         }
 
         int col_min = 0;
