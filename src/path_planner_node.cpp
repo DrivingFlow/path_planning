@@ -70,8 +70,6 @@ public:
         declare_parameter<std::string>("planner", "rrt");
         // A* only: [beta_valley, smooth_alpha, smooth_beta, smooth_n_iter]; RRT ignores this (string or double array)
         declare_parameter("planner_settings", std::string("0.1,0.1,0.2,50"));
-        // If true, assume live lidar is already in map frame; skip pose transform (for testing)
-        declare_parameter<bool>("live_scan_in_map_frame", false);
 
         std::string map_pcd = get_parameter("map_pcd_path").as_string();
         std::string map_png = get_parameter("map_png_path").as_string();
@@ -164,6 +162,8 @@ private:
         tf2::Quaternion quat(q.x, q.y, q.z, q.w);
         double roll, pitch, yaw;
         tf2::Matrix3x3(quat).getRPY(roll, pitch, yaw);
+        start_roll_ = roll;
+        start_pitch_ = pitch;
         start_yaw_ = yaw;
         have_pose_ = true;
     }
@@ -249,19 +249,36 @@ private:
 
     std::vector<std::array<float, 3>> transformPointsToMap(
         const std::vector<std::array<float, 3>>& points_lidar,
-        double tx, double ty, double tz, double yaw) const {
+        double tx, double ty, double tz,
+        double roll, double pitch, double yaw) const {
         if (points_lidar.empty()) return {};
         std::vector<std::array<float, 3>> out;
         out.reserve(points_lidar.size());
-        double c = std::cos(yaw);
-        double s = std::sin(yaw);
+
+        // Rotation matrix R = Rz(yaw) * Ry(pitch) * Rx(roll)
+        double cr = std::cos(roll),  sr = std::sin(roll);
+        double cp = std::cos(pitch), sp = std::sin(pitch);
+        double cy = std::cos(yaw),   sy = std::sin(yaw);
+
+        double r00 = cy * cp;
+        double r01 = cy * sp * sr - sy * cr;
+        double r02 = cy * sp * cr + sy * sr;
+
+        double r10 = sy * cp;
+        double r11 = sy * sp * sr + cy * cr;
+        double r12 = sy * sp * cr - cy * sr;
+
+        double r20 = -sp;
+        double r21 = cp * sr;
+        double r22 = cp * cr;
+
         for (const auto& pt : points_lidar) {
             double x = pt[0];
             double y = pt[1];
             double z = pt[2];
-            double x_m = c * x - s * y + tx;
-            double y_m = s * x + c * y + ty;
-            double z_m = z + tz;
+            double x_m = r00 * x + r01 * y + r02 * z + tx;
+            double y_m = r10 * x + r11 * y + r12 * z + ty;
+            double z_m = r20 * x + r21 * y + r22 * z + tz;
             out.push_back({{static_cast<float>(x_m), static_cast<float>(y_m), static_cast<float>(z_m)}});
         }
         return out;
@@ -272,25 +289,31 @@ private:
 
         std::vector<std::array<float, 3>> live_pts;
         double start_x, start_y, goal_x, goal_y;
-        double start_z, start_yaw;
+        double start_z, start_roll, start_pitch, start_yaw;
         bool have_pose, have_goal;
         std::vector<std::array<double, 2>> current_path;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             live_pts = live_points_;
-            start_x = start_x_; start_y = start_y_;
-            start_z = start_z_; start_yaw = start_yaw_;
-            goal_x = goal_x_; goal_y = goal_y_;
-            have_pose = have_pose_; have_goal = have_goal_;
+            start_x = start_x_;
+            start_y = start_y_;
+            start_z = start_z_;
+            start_roll = start_roll_;
+            start_pitch = start_pitch_;
+            start_yaw = start_yaw_;
+            goal_x = goal_x_;
+            goal_y = goal_y_;
+            have_pose = have_pose_;
+            have_goal = have_goal_;
             current_path = current_path_;  // Copy current path
         }
 
-        if (have_pose && !get_parameter("live_scan_in_map_frame").as_bool()) {
-            live_pts = transformPointsToMap(live_pts, start_x, start_y, start_z, start_yaw);
-        } else if (!get_parameter("live_scan_in_map_frame").as_bool()) {
+        if (have_pose) {
+            live_pts = transformPointsToMap(live_pts, start_x, start_y, start_z,
+                                            start_roll, start_pitch, start_yaw);
+        } else {
             live_pts.clear();
         }
-        // If live_scan_in_map_frame is true, use live_pts as-is (already in map frame)
 
         double z_min = get_parameter("z_min").as_double();
         double z_max = get_parameter("z_max").as_double();
@@ -465,6 +488,8 @@ private:
     std::vector<std::array<float, 3>> live_points_;
     double start_x_ = 0, start_y_ = 0, goal_x_ = 0, goal_y_ = 0;
     double start_z_ = 0;
+    double start_roll_ = 0;
+    double start_pitch_ = 0;
     double start_yaw_ = 0;
     bool have_pose_ = false, have_goal_ = false;
     std::vector<std::array<double, 2>> current_path_;  // Current planned path in world coordinates
