@@ -32,6 +32,7 @@ def generate_launch_description():
     view_col_max = LaunchConfiguration("view_col_max")
     view_row_min = LaunchConfiguration("view_row_min")
     view_row_max = LaunchConfiguration("view_row_max")
+    show_energy_map = LaunchConfiguration("show_energy_map")
 
     sample_col_min = LaunchConfiguration("sample_col_min")
     sample_col_max = LaunchConfiguration("sample_col_max")
@@ -83,6 +84,8 @@ def generate_launch_description():
             DeclareLaunchArgument("viz_rate", default_value="10.0"),
             # Visualizer type: 'cpp' or 'python'
             DeclareLaunchArgument("visualizer_type", default_value="cpp"),
+            # Whether to show energy / clearance map beside binary map in C++ visualizer
+            DeclareLaunchArgument("show_energy_map", default_value="True"),
             # Minimum column for visualization view; -1 = full grid width
             DeclareLaunchArgument("view_col_min", default_value="375"),
             # Maximum column for visualization view; -1 = full grid width
@@ -189,6 +192,7 @@ def generate_launch_description():
                         "view_col_max": view_col_max,
                         "view_row_min": view_row_min,
                         "view_row_max": view_row_max,
+                        "show_energy_map": show_energy_map,
                     }
                 ],
                 condition=IfCondition(
