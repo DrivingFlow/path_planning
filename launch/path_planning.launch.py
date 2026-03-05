@@ -50,11 +50,11 @@ def generate_launch_description():
             # Resolution of the occupancy grid (meters per cell)
             DeclareLaunchArgument("resolution", default_value="0.05"),
             # Minimum z-coordinate for obstacle detection (meters)
-            DeclareLaunchArgument("z_min", default_value="0.1"),
+            DeclareLaunchArgument("z_min", default_value="0.015"),
             # Maximum z-coordinate for obstacle detection (meters)
             DeclareLaunchArgument("z_max", default_value="0.6"),
             # Robot radius for collision checking (meters)
-            DeclareLaunchArgument("robot_radius", default_value="0.0"),
+            DeclareLaunchArgument("robot_radius", default_value="0.1"),
             # Number of RRT iterations for path planning
             DeclareLaunchArgument("rrt_iterations", default_value="10000"),
             # Step size for RRT tree expansion (meters)
@@ -104,7 +104,7 @@ def generate_launch_description():
             # Path planner: 'rrt' or 'astar' (A* with clearance energy)
             DeclareLaunchArgument("planner", default_value="astar"),
             # A* only: [beta_valley,smooth_alpha,smooth_beta,smooth_n_iter]; RRT ignores
-            DeclareLaunchArgument("planner_settings", default_value="0.1,0.1,0.2,50"),
+            DeclareLaunchArgument("planner_settings", default_value="0.1,0.2,0.2,30"),
             Node(
                 package="path_planning",
                 executable="path_planner_node",
