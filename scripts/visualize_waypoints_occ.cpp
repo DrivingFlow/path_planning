@@ -69,7 +69,11 @@ public:
         cv::namedWindow(window_name_, cv::WINDOW_NORMAL);
         cv::resizeWindow(window_name_, 900, 900);
         cv::setMouseCallback(window_name_, &WaypointsOccVisualizer::onMouse, this);
-        RCLCPP_INFO(get_logger(), "Left-click on the visualization to set a goal!");
+        if (show_energy_map_) {
+            cv::namedWindow(energy_window_name_, cv::WINDOW_NORMAL);
+            cv::resizeWindow(energy_window_name_, 900, 900);
+        }
+        RCLCPP_INFO(get_logger(), "Left-click on the visualization window to set a goal!");
     }
 
 private:
@@ -230,7 +234,9 @@ private:
             view_energy = energy_color(roi);
         }
 
-        auto draw_polyline = [&](const std::vector<cv::Point2d>& pts, const cv::Scalar& color) {
+        auto draw_polyline = [&](const std::vector<cv::Point2d>& pts,
+                                 const cv::Scalar& color,
+                                 cv::Mat& canvas) {
             if (pts.size() < 2) return;
             std::vector<cv::Point> px;
             for (const auto& w : pts) {
@@ -238,31 +244,49 @@ private:
                 if (worldToPixel(occ, w, p)) px.push_back(p - cv::Point(col_min, row_min));
             }
             for (size_t i = 1; i < px.size(); ++i) {
-                cv::line(view_occ, px[i - 1], px[i], color, 2);
+                cv::line(canvas, px[i - 1], px[i], color, 2);
             }
         };
 
-        draw_polyline(path, cv::Scalar(255, 0, 0));        // blue
+        // Draw path (blue) on occupancy view (and energy view if enabled)
+        draw_polyline(path, cv::Scalar(255, 0, 0), view_occ);
+        if (show_energy_map_ && !view_energy.empty()) {
+            draw_polyline(path, cv::Scalar(255, 0, 0), view_energy);
+        }
 
+        // Waypoints (red dots), robot (green), goal (yellow star)
         for (const auto& w : waypoints) {
             cv::Point p;
-                if (worldToPixel(occ, w, p)) {
-                    cv::circle(view_occ, p - cv::Point(col_min, row_min), 3, cv::Scalar(0, 0, 255), -1);
+            if (worldToPixel(occ, w, p)) {
+                cv::Point p_local = p - cv::Point(col_min, row_min);
+                cv::circle(view_occ, p_local, 3, cv::Scalar(0, 0, 255), -1);
+                if (show_energy_map_ && !view_energy.empty()) {
+                    cv::circle(view_energy, p_local, 3, cv::Scalar(0, 0, 255), -1);
+                }
             }
         }
 
         if (robot.has_value()) {
             cv::Point p;
-                if (worldToPixel(occ, robot.value(), p)) {
-                    cv::circle(view_occ, p - cv::Point(col_min, row_min), 6, cv::Scalar(0, 255, 0), -1);
+            if (worldToPixel(occ, robot.value(), p)) {
+                cv::Point p_local = p - cv::Point(col_min, row_min);
+                cv::circle(view_occ, p_local, 6, cv::Scalar(0, 255, 0), -1);
+                if (show_energy_map_ && !view_energy.empty()) {
+                    cv::circle(view_energy, p_local, 6, cv::Scalar(0, 255, 0), -1);
+                }
             }
         }
 
         if (goal.has_value()) {
             cv::Point p;
-                if (worldToPixel(occ, goal.value(), p)) {
-                    cv::drawMarker(view_occ, p - cv::Point(col_min, row_min),
+            if (worldToPixel(occ, goal.value(), p)) {
+                cv::Point p_local = p - cv::Point(col_min, row_min);
+                cv::drawMarker(view_occ, p_local,
                                cv::Scalar(0, 255, 255), cv::MARKER_STAR, 12, 2);
+                if (show_energy_map_ && !view_energy.empty()) {
+                    cv::drawMarker(view_energy, p_local,
+                                   cv::Scalar(0, 255, 255), cv::MARKER_STAR, 12, 2);
+                }
             }
         }
 
@@ -323,16 +347,15 @@ private:
             drawLabel(view_occ, "col,row: out of bounds");
         }
 
-        cv::Mat combined;
-        if (show_energy_map_ && !view_energy.empty()) {
-            // Put occupancy on the left, energy (clearance heatmap) on the right
-            cv::hconcat(view_occ, view_energy, combined);
-        } else {
-            combined = view_occ;
-        }
+        // Show occupancy in main window
+        cv::resizeWindow(window_name_, view_occ.cols, view_occ.rows);
+        cv::imshow(window_name_, view_occ);
 
-        cv::resizeWindow(window_name_, combined.cols, combined.rows);
-        cv::imshow(window_name_, combined);
+        // If enabled, show energy map + overlays in a separate window
+        if (show_energy_map_ && !view_energy.empty()) {
+            cv::resizeWindow(energy_window_name_, view_energy.cols, view_energy.rows);
+            cv::imshow(energy_window_name_, view_energy);
+        }
         cv::waitKey(1);
     }
 
@@ -358,6 +381,7 @@ private:
     int view_row_max_ = -1;
     bool show_energy_map_ = true;
     const std::string window_name_ = "Occupancy grid + waypoints (map frame)";
+    const std::string energy_window_name_ = "Energy map + path (clearance)";
 
     std::mutex mouse_mutex_;
     int mouse_x_ = -1;
