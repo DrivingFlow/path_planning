@@ -69,10 +69,6 @@ public:
         cv::namedWindow(window_name_, cv::WINDOW_NORMAL);
         cv::resizeWindow(window_name_, 900, 900);
         cv::setMouseCallback(window_name_, &WaypointsOccVisualizer::onMouse, this);
-        if (show_energy_map_) {
-            cv::namedWindow(energy_window_name_, cv::WINDOW_NORMAL);
-            cv::resizeWindow(energy_window_name_, 900, 900);
-        }
         RCLCPP_INFO(get_logger(), "Left-click on the visualization window to set a goal!");
     }
 
@@ -204,11 +200,19 @@ private:
             }
             cv::Mat dist;
             cv::distanceTransform(binary_inv, dist, cv::DIST_L2, cv::DIST_MASK_PRECISE);
+            // Clip very large distances so the colormap uses its full range near obstacles
+            double max_val = 0.0;
+            cv::minMaxLoc(dist, nullptr, &max_val);
+            double clip = std::min(max_val, 8.0);  // ~8px clearance cap
+            cv::Mat dist_clipped = dist.clone();
+            if (clip > 0.0) {
+                cv::threshold(dist_clipped, dist_clipped, clip, clip, cv::THRESH_TRUNC);
+            }
             cv::Mat dist_norm;
-            cv::normalize(dist, dist_norm, 0, 255, cv::NORM_MINMAX);
+            cv::normalize(dist_clipped, dist_norm, 0, 255, cv::NORM_MINMAX);
             dist_norm.convertTo(dist_norm, CV_8UC1);
             energy_color = cv::Mat(occ.height, occ.width, CV_8UC3);
-            cv::applyColorMap(dist_norm, energy_color, cv::COLORMAP_JET);
+            cv::applyColorMap(dist_norm, energy_color, cv::COLORMAP_TURBO);
         }
 
         int col_min = 0;
@@ -347,15 +351,16 @@ private:
             drawLabel(view_occ, "col,row: out of bounds");
         }
 
-        // Show occupancy in main window
-        cv::resizeWindow(window_name_, view_occ.cols, view_occ.rows);
-        cv::imshow(window_name_, view_occ);
-
-        // If enabled, show energy map + overlays in a separate window
+        // Build single combined view: occupancy on the left, energy map on the right
+        cv::Mat combined;
         if (show_energy_map_ && !view_energy.empty()) {
-            cv::resizeWindow(energy_window_name_, view_energy.cols, view_energy.rows);
-            cv::imshow(energy_window_name_, view_energy);
+            cv::hconcat(view_occ, view_energy, combined);
+        } else {
+            combined = view_occ;
         }
+
+        cv::resizeWindow(window_name_, combined.cols, combined.rows);
+        cv::imshow(window_name_, combined);
         cv::waitKey(1);
     }
 
@@ -381,7 +386,6 @@ private:
     int view_row_max_ = -1;
     bool show_energy_map_ = true;
     const std::string window_name_ = "Occupancy grid + waypoints (map frame)";
-    const std::string energy_window_name_ = "Energy map + path (clearance)";
 
     std::mutex mouse_mutex_;
     int mouse_x_ = -1;
