@@ -215,7 +215,7 @@ private:
             }
 
             energy_color = cv::Mat(occ.height, occ.width, CV_8UC3);
-            cv::applyColorMap(dist_norm_u8, energy_color, cv::COLORMAP_VIRIDIS);
+            cv::applyColorMap(dist_norm_u8, energy_color, cv::COLORMAP_TURBO);
         }
 
         int col_min = 0;
