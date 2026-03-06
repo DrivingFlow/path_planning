@@ -6,6 +6,8 @@
 
 #include <opencv2/opencv.hpp>
 
+#include <Eigen/Dense>
+
 #include <mutex>
 #include <vector>
 #include <optional>
@@ -105,19 +107,22 @@ private:
 
     bool worldToPixel(const OccData& occ, const cv::Point2d& w, cv::Point& p) const {
         if (occ.width <= 0 || occ.height <= 0 || occ.resolution <= 0.0) return false;
-        double col = (w.x - occ.origin_x) / occ.resolution;
-        double row = (occ.origin_y + occ.height * occ.resolution - w.y) / occ.resolution;
-        int c = static_cast<int>(std::round(col));
-        int r = static_cast<int>(std::round(row));
+        Eigen::Vector2d world(w.x, w.y);
+        Eigen::Vector2d origin(occ.origin_x, occ.origin_y + occ.height * occ.resolution);
+        Eigen::Vector2d col_row = (world - origin).array() / occ.resolution;
+        col_row.y() = -col_row.y();
+        int c = static_cast<int>(std::round(col_row.x()));
+        int r = static_cast<int>(std::round(col_row.y()));
         if (c < 0 || c >= occ.width || r < 0 || r >= occ.height) return false;
         p = cv::Point(c, r);
         return true;
     }
 
     cv::Point2d pixelToWorld(const OccData& occ, int col, int row) const {
-        double x = occ.origin_x + col * occ.resolution;
-        double y = occ.origin_y + (occ.height - 1 - row) * occ.resolution;
-        return cv::Point2d(x, y);
+        Eigen::Vector2d p(
+            occ.origin_x + col * occ.resolution,
+            occ.origin_y + (occ.height - 1 - row) * occ.resolution);
+        return cv::Point2d(p.x(), p.y());
     }
 
     static void onMouse(int event, int x, int y, int, void* userdata) {

@@ -8,14 +8,16 @@
 #include <algorithm>
 #include <limits>
 
+#include <Eigen/Dense>
+
 namespace path_planning {
 
 struct Node {
-    cv::Point2f pos;
+    Eigen::Vector2d pos;
     int parent;
     double cost;
     Node() : parent(-1), cost(0.0) {}
-    Node(const cv::Point2f& p, int par = -1, double c = 0.0) : pos(p), parent(par), cost(c) {}
+    Node(const Eigen::Vector2d& p, int par = -1, double c = 0.0) : pos(p), parent(par), cost(c) {}
 };
 
 class RRTPlanner {
@@ -36,17 +38,17 @@ public:
                                   int n_iter = 10000, bool debug = false, bool plot = false);
 
 private:
-    double sqdist(const cv::Point2f& a, const cv::Point2f& b) const;
-    double dist(const cv::Point2f& a, const cv::Point2f& b) const;
-    int findNearest(const cv::Point2f& query, const std::vector<Node>& nodes) const;
-    std::vector<int> findNear(const cv::Point2f& query, double radius,
+    double sqdist(const Eigen::Vector2d& a, const Eigen::Vector2d& b) const;
+    double dist(const Eigen::Vector2d& a, const Eigen::Vector2d& b) const;
+    int findNearest(const Eigen::Vector2d& query, const std::vector<Node>& nodes) const;
+    std::vector<int> findNear(const Eigen::Vector2d& query, double radius,
                              const std::vector<Node>& nodes) const;
     cv::Mat binaryDilation(const cv::Mat& binary, int kernel_size) const;
-    bool collisionFree(const cv::Point2f& a, const cv::Point2f& b) const;
-    cv::Point2f uniformSample() const;
-    bool informedFilter(const cv::Point2f& x, const cv::Point2f& start,
-                       const cv::Point2f& goal, double max_sum_dist) const;
-    cv::Point2f steer(const cv::Point2f& a, const cv::Point2f& b) const;
+    bool collisionFree(const Eigen::Vector2d& a, const Eigen::Vector2d& b) const;
+    Eigen::Vector2d uniformSample() const;
+    bool informedFilter(const Eigen::Vector2d& x, const Eigen::Vector2d& start,
+                       const Eigen::Vector2d& goal, double max_sum_dist) const;
+    Eigen::Vector2d steer(const Eigen::Vector2d& a, const Eigen::Vector2d& b) const;
     std::vector<cv::Point2f> resamplePath(const std::vector<cv::Point2f>& path, double ds) const;
 
     cv::Mat grid_;

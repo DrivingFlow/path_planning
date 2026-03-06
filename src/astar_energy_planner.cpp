@@ -3,6 +3,8 @@
 #include <cmath>
 #include <limits>
 
+#include <Eigen/Dense>
+
 namespace path_planning {
 
 AStarEnergyPlanner::AStarEnergyPlanner(const cv::Mat& grid_img, int robot_radius_pixels)
@@ -165,43 +167,52 @@ std::vector<cv::Point2f> AStarEnergyPlanner::smoothPath(std::vector<cv::Point2f>
                                                         double alpha, double beta, int n_iter) const {
     if (path.size() < 3 || n_iter <= 0) return path;
 
+    std::vector<Eigen::Vector2d> pts(path.size());
+    for (size_t i = 0; i < path.size(); ++i)
+        pts[i] = Eigen::Vector2d(static_cast<double>(path[i].x), static_cast<double>(path[i].y));
+
     for (int it = 0; it < n_iter; ++it) {
-        std::vector<cv::Point2f> new_path = path;
-        for (size_t i = 1; i + 1 < path.size(); ++i) {
-            const cv::Point2f& prev_pt = path[i - 1];
-            const cv::Point2f& next_pt = path[i + 1];
-            const cv::Point2f& curr = path[i];
+        std::vector<Eigen::Vector2d> new_pts = pts;
+        for (size_t i = 1; i + 1 < pts.size(); ++i) {
+            const Eigen::Vector2d& prev_pt = pts[i - 1];
+            const Eigen::Vector2d& next_pt = pts[i + 1];
+            const Eigen::Vector2d& curr = pts[i];
 
-            cv::Point2f smooth_force(alpha * (prev_pt.x + next_pt.x - 2.f * curr.x),
-                                    alpha * (prev_pt.y + next_pt.y - 2.f * curr.y));
+            Eigen::Vector2d smooth_force = alpha * (prev_pt + next_pt - 2.0 * curr);
 
-            int xi = static_cast<int>(curr.x), yi = static_cast<int>(curr.y);
+            int xi = static_cast<int>(curr.x()), yi = static_cast<int>(curr.y());
             xi = std::max(0, std::min(w_ - 1, xi));
             yi = std::max(0, std::min(h_ - 1, yi));
             double gx = grad_x_.at<double>(yi, xi);
             double gy = grad_y_.at<double>(yi, xi);
-            cv::Point2f repel_force(static_cast<float>(beta * gx), static_cast<float>(beta * gy));
+            Eigen::Vector2d repel_force(beta * gx, beta * gy);
 
-            cv::Point2f new_pt = curr + smooth_force + repel_force;
-            int nx = static_cast<int>(new_pt.x), ny = static_cast<int>(new_pt.y);
+            Eigen::Vector2d new_pt = curr + smooth_force + repel_force;
+            int nx = static_cast<int>(new_pt.x()), ny = static_cast<int>(new_pt.y());
             if (nx >= 0 && nx < w_ && ny >= 0 && ny < h_ && valid_.at<uchar>(ny, nx) != 0)
-                new_path[i] = new_pt;
+                new_pts[i] = new_pt;
         }
-        path = new_path;
+        pts = new_pts;
     }
-    return path;
+
+    std::vector<cv::Point2f> result(path.size());
+    for (size_t i = 0; i < pts.size(); ++i)
+        result[i] = cv::Point2f(static_cast<float>(pts[i].x()), static_cast<float>(pts[i].y()));
+    return result;
 }
 
 std::vector<cv::Point2f> AStarEnergyPlanner::resamplePath(const std::vector<cv::Point2f>& path, double ds) const {
     if (path.size() < 2 || ds <= 0) return path;
 
+    std::vector<Eigen::Vector2d> pts(path.size());
+    for (size_t i = 0; i < path.size(); ++i)
+        pts[i] = Eigen::Vector2d(static_cast<double>(path[i].x), static_cast<double>(path[i].y));
+
     std::vector<double> seg_lengths(path.size() - 1);
     std::vector<double> s(path.size());
     s[0] = 0;
-    for (size_t i = 0; i + 1 < path.size(); ++i) {
-        double dx = path[i + 1].x - path[i].x;
-        double dy = path[i + 1].y - path[i].y;
-        seg_lengths[i] = std::sqrt(dx * dx + dy * dy);
+    for (size_t i = 0; i + 1 < pts.size(); ++i) {
+        seg_lengths[i] = (pts[i + 1] - pts[i]).norm();
         s[i + 1] = s[i] + seg_lengths[i];
     }
     double total_length = s.back();
@@ -216,9 +227,8 @@ std::vector<cv::Point2f> AStarEnergyPlanner::resamplePath(const std::vector<cv::
             seg_idx++;
         double seg_len = std::max(seg_lengths[seg_idx], 1e-9);
         double t = (si - s[seg_idx]) / seg_len;
-        float x = path[seg_idx].x + static_cast<float>(t) * (path[seg_idx + 1].x - path[seg_idx].x);
-        float y = path[seg_idx].y + static_cast<float>(t) * (path[seg_idx + 1].y - path[seg_idx].y);
-        new_pts.push_back(cv::Point2f(x, y));
+        Eigen::Vector2d p = pts[seg_idx] + t * (pts[seg_idx + 1] - pts[seg_idx]);
+        new_pts.push_back(cv::Point2f(static_cast<float>(p.x()), static_cast<float>(p.y())));
         if (si >= total_length) break;
     }
     return new_pts;

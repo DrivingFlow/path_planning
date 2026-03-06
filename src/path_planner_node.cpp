@@ -25,6 +25,9 @@
 #include <string>
 #include <sstream>
 
+#include <Eigen/Dense>
+#include <Eigen/Geometry>
+
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2/LinearMath/Matrix3x3.h>
 
@@ -187,48 +190,41 @@ private:
                                  double lookahead_distance) const {
         if (path_world.empty()) return false;
 
-        double resolution = bridge_.resolution();
+        const double resolution = bridge_.resolution();
         double cumulative_dist = 0.0;
+
+        const Eigen::Vector2d robot(robot_x, robot_y);
 
         // Find closest point on path to robot (start checking from there)
         size_t start_idx = 0;
         double min_dist_sq = 1e30;
         for (size_t i = 0; i < path_world.size(); ++i) {
-            double dx = path_world[i][0] - robot_x;
-            double dy = path_world[i][1] - robot_y;
-            double dist_sq = dx * dx + dy * dy;
-            if (dist_sq < min_dist_sq) {
-                min_dist_sq = dist_sq;
+            Eigen::Vector2d p(path_world[i][0], path_world[i][1]);
+            double d_sq = (p - robot).squaredNorm();
+            if (d_sq < min_dist_sq) {
+                min_dist_sq = d_sq;
                 start_idx = i;
             }
         }
 
         // Check path segments starting from closest point
         for (size_t i = start_idx; i + 1 < path_world.size(); ++i) {
-            double x0 = path_world[i][0], y0 = path_world[i][1];
-            double x1 = path_world[i+1][0], y1 = path_world[i+1][1];
+            Eigen::Vector2d p0(path_world[i][0], path_world[i][1]);
+            Eigen::Vector2d p1(path_world[i + 1][0], path_world[i + 1][1]);
 
-            // Segment length
-            double seg_len = std::sqrt((x1-x0)*(x1-x0) + (y1-y0)*(y1-y0));
+            double seg_len = (p1 - p0).norm();
             if (i > start_idx) {
                 cumulative_dist += seg_len;
             } else {
-                // For first segment, add distance from robot to segment start
-                double dx = x0 - robot_x, dy = y0 - robot_y;
-                cumulative_dist = std::sqrt(dx*dx + dy*dy);
+                cumulative_dist = (p0 - robot).norm();
             }
 
-            // Stop if we've exceeded lookahead distance
-            if (cumulative_dist > lookahead_distance) {
-                break;
-            }
+            if (cumulative_dist > lookahead_distance) break;
 
-            // Convert segment endpoints to grid coordinates
             int col0, row0, col1, row1;
-            bridge_.worldToGrid(x0, y0, col0, row0);
-            bridge_.worldToGrid(x1, y1, col1, row1);
+            bridge_.worldToGrid(p0.x(), p0.y(), col0, row0);
+            bridge_.worldToGrid(p1.x(), p1.y(), col1, row1);
 
-            // Sample points along segment and check for obstacles
             int num_samples = static_cast<int>(seg_len / resolution) + 1;
             for (int j = 0; j <= num_samples; ++j) {
                 double t = static_cast<double>(j) / num_samples;
@@ -236,14 +232,10 @@ private:
                 int row = static_cast<int>(row0 + t * (row1 - row0));
 
                 if (col >= 0 && col < occupancy_grid.cols && row >= 0 && row < occupancy_grid.rows) {
-                    if (occupancy_grid.at<uchar>(row, col) != 0) {
-                        // Obstacle found within lookahead distance
-                        return true;
-                    }
+                    if (occupancy_grid.at<uchar>(row, col) != 0) return true;
                 }
             }
         }
-
         return false;
     }
 
@@ -255,31 +247,17 @@ private:
         std::vector<std::array<float, 3>> out;
         out.reserve(points_lidar.size());
 
-        // Rotation matrix R = Rz(yaw) * Ry(pitch) * Rx(roll)
-        double cr = std::cos(roll),  sr = std::sin(roll);
-        double cp = std::cos(pitch), sp = std::sin(pitch);
-        double cy = std::cos(yaw),   sy = std::sin(yaw);
-
-        double r00 = cy * cp;
-        double r01 = cy * sp * sr - sy * cr;
-        double r02 = cy * sp * cr + sy * sr;
-
-        double r10 = sy * cp;
-        double r11 = sy * sp * sr + cy * cr;
-        double r12 = sy * sp * cr - cy * sr;
-
-        double r20 = -sp;
-        double r21 = cp * sr;
-        double r22 = cp * cr;
+        // Rotation matrix R = Rz(yaw) * Ry(pitch) * Rx(roll) using Eigen
+        Eigen::AngleAxisd roll_angle(roll, Eigen::Vector3d::UnitX());
+        Eigen::AngleAxisd pitch_angle(pitch, Eigen::Vector3d::UnitY());
+        Eigen::AngleAxisd yaw_angle(yaw, Eigen::Vector3d::UnitZ());
+        Eigen::Matrix3d R = (yaw_angle * pitch_angle * roll_angle).toRotationMatrix();
+        Eigen::Vector3d t(tx, ty, tz);
 
         for (const auto& pt : points_lidar) {
-            double x = pt[0];
-            double y = pt[1];
-            double z = pt[2];
-            double x_m = r00 * x + r01 * y + r02 * z + tx;
-            double y_m = r10 * x + r11 * y + r12 * z + ty;
-            double z_m = r20 * x + r21 * y + r22 * z + tz;
-            out.push_back({{static_cast<float>(x_m), static_cast<float>(y_m), static_cast<float>(z_m)}});
+            Eigen::Vector3d p(static_cast<double>(pt[0]), static_cast<double>(pt[1]), static_cast<double>(pt[2]));
+            Eigen::Vector3d p_m = R * p + t;
+            out.push_back({{static_cast<float>(p_m.x()), static_cast<float>(p_m.y()), static_cast<float>(p_m.z())}});
         }
         return out;
     }

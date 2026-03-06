@@ -12,6 +12,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(OpenCV REQUIRED)
+find_package(Eigen3 REQUIRED)
 
 # Bridge + RRT library (no ROS)
 # Use OpenCV_LIBS / OpenCV_INCLUDE_DIRS for compatibility with Ubuntu's libopencv-dev (OpenCV config may not export OpenCV:: targets)
@@ -23,6 +24,7 @@ add_library(path_planning_core
 target_include_directories(path_planning_core PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/src
   ${OpenCV_INCLUDE_DIRS}
+  ${EIGEN3_INCLUDE_DIR}
 )
 target_link_libraries(path_planning_core ${OpenCV_LIBS})
 
@@ -33,7 +35,7 @@ target_link_libraries(path_planner_node path_planning_core)
 ament_target_dependencies(path_planner_node rclcpp sensor_msgs geometry_msgs nav_msgs tf2)
 
 add_executable(visualize_waypoints_occ_cpp scripts/visualize_waypoints_occ.cpp)
-target_include_directories(visualize_waypoints_occ_cpp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(visualize_waypoints_occ_cpp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${EIGEN3_INCLUDE_DIR})
 target_link_libraries(visualize_waypoints_occ_cpp ${OpenCV_LIBS})
 ament_target_dependencies(visualize_waypoints_occ_cpp rclcpp nav_msgs geometry_msgs)
 

@@ -29,31 +29,30 @@ RRTPlanner::RRTPlanner(const cv::Mat& grid_img,
     cv::dilate(binary, occ_, kernel);
 }
 
-double RRTPlanner::sqdist(const cv::Point2f& a, const cv::Point2f& b) const {
-    double dx = a.x - b.x, dy = a.y - b.y;
-    return dx * dx + dy * dy;
+double RRTPlanner::sqdist(const Eigen::Vector2d& a, const Eigen::Vector2d& b) const {
+    return (a - b).squaredNorm();
 }
 
-double RRTPlanner::dist(const cv::Point2f& a, const cv::Point2f& b) const {
-    return std::sqrt(sqdist(a, b));
+double RRTPlanner::dist(const Eigen::Vector2d& a, const Eigen::Vector2d& b) const {
+    return (a - b).norm();
 }
 
-int RRTPlanner::findNearest(const cv::Point2f& query, const std::vector<Node>& nodes) const {
+int RRTPlanner::findNearest(const Eigen::Vector2d& query, const std::vector<Node>& nodes) const {
     int best_idx = 0;
     double best_dist = std::numeric_limits<double>::max();
     for (size_t i = 0; i < nodes.size(); ++i) {
-        double d = sqdist(query, nodes[i].pos);
+        double d = (query - nodes[i].pos).squaredNorm();
         if (d < best_dist) { best_dist = d; best_idx = static_cast<int>(i); }
     }
     return best_idx;
 }
 
-std::vector<int> RRTPlanner::findNear(const cv::Point2f& query, double radius,
+std::vector<int> RRTPlanner::findNear(const Eigen::Vector2d& query, double radius,
                                       const std::vector<Node>& nodes) const {
     std::vector<int> near_idxs;
     double radius_sq = radius * radius;
     for (size_t i = 0; i < nodes.size(); ++i) {
-        if (sqdist(query, nodes[i].pos) <= radius_sq)
+        if ((query - nodes[i].pos).squaredNorm() <= radius_sq)
             near_idxs.push_back(static_cast<int>(i));
     }
     return near_idxs;
@@ -66,20 +65,21 @@ cv::Mat RRTPlanner::binaryDilation(const cv::Mat& binary, int kernel_size) const
     return dilated;
 }
 
-bool RRTPlanner::collisionFree(const cv::Point2f& a, const cv::Point2f& b) const {
-    double length = dist(a, b);
+bool RRTPlanner::collisionFree(const Eigen::Vector2d& a, const Eigen::Vector2d& b) const {
+    double length = (b - a).norm();
     int n = static_cast<int>(length / 3.0) + 1;
     for (int i = 0; i <= n; ++i) {
         double t = static_cast<double>(i) / n;
-        int x = static_cast<int>(a.x + t * (b.x - a.x));
-        int y = static_cast<int>(a.y + t * (b.y - a.y));
+        Eigen::Vector2d p = a + t * (b - a);
+        int x = static_cast<int>(p.x());
+        int y = static_cast<int>(p.y());
         if (x < 0 || y < 0 || x >= w_ || y >= h_) return false;
         if (occ_.at<uchar>(y, x) != 0) return false;
     }
     return true;
 }
 
-cv::Point2f RRTPlanner::uniformSample() const {
+Eigen::Vector2d RRTPlanner::uniformSample() const {
     double x_lo = 0.0, x_hi = static_cast<double>(w_);
     double y_lo = 0.0, y_hi = static_cast<double>(h_);
     if (sample_col_min_ >= 0 && sample_col_max_ >= 0) {
@@ -92,28 +92,32 @@ cv::Point2f RRTPlanner::uniformSample() const {
     }
     std::uniform_real_distribution<double> x_dist(x_lo, x_hi);
     std::uniform_real_distribution<double> y_dist(y_lo, y_hi);
-    return cv::Point2f(static_cast<float>(x_dist(rng_)), static_cast<float>(y_dist(rng_)));
+    return Eigen::Vector2d(x_dist(rng_), y_dist(rng_));
 }
 
-bool RRTPlanner::informedFilter(const cv::Point2f& x, const cv::Point2f& start,
-                                const cv::Point2f& goal, double max_sum_dist) const {
+bool RRTPlanner::informedFilter(const Eigen::Vector2d& x, const Eigen::Vector2d& start,
+                                const Eigen::Vector2d& goal, double max_sum_dist) const {
     if (max_sum_dist < 0) return true;
-    return dist(x, start) + dist(x, goal) <= max_sum_dist;
+    return (x - start).norm() + (x - goal).norm() <= max_sum_dist;
 }
 
-cv::Point2f RRTPlanner::steer(const cv::Point2f& a, const cv::Point2f& b) const {
-    cv::Point2f v = b - a;
-    double d = cv::norm(v);
+Eigen::Vector2d RRTPlanner::steer(const Eigen::Vector2d& a, const Eigen::Vector2d& b) const {
+    Eigen::Vector2d v = b - a;
+    double d = v.norm();
     if (d <= step_size_) return b;
-    return a + (v / static_cast<float>(d)) * static_cast<float>(step_size_);
+    return a + (v / d) * step_size_;
 }
 
 std::vector<cv::Point2f> RRTPlanner::resamplePath(const std::vector<cv::Point2f>& path, double ds) const {
     if (path.size() < 2) return path;
+    std::vector<Eigen::Vector2d> pts(path.size());
+    for (size_t i = 0; i < path.size(); ++i)
+        pts[i] = Eigen::Vector2d(static_cast<double>(path[i].x), static_cast<double>(path[i].y));
+
     std::vector<double> seg_lengths, s;
     s.push_back(0.0);
-    for (size_t i = 0; i < path.size() - 1; ++i) {
-        double seg_len = dist(path[i], path[i + 1]);
+    for (size_t i = 0; i < pts.size() - 1; ++i) {
+        double seg_len = (pts[i + 1] - pts[i]).norm();
         seg_lengths.push_back(seg_len);
         s.push_back(s.back() + seg_len);
     }
@@ -130,29 +134,33 @@ std::vector<cv::Point2f> RRTPlanner::resamplePath(const std::vector<cv::Point2f>
         while (seg_idx < seg_lengths.size() - 1 && s[seg_idx + 1] < si) seg_idx++;
         double seg_len = std::max(seg_lengths[seg_idx], 1e-9);
         double t = (si - s[seg_idx]) / seg_len;
-        new_pts.push_back(path[seg_idx] + static_cast<float>(t) * (path[seg_idx + 1] - path[seg_idx]));
+        Eigen::Vector2d p = pts[seg_idx] + t * (pts[seg_idx + 1] - pts[seg_idx]);
+        new_pts.push_back(cv::Point2f(static_cast<float>(p.x()), static_cast<float>(p.y())));
     }
     return new_pts;
 }
 
 std::vector<cv::Point2i> RRTPlanner::plan(const cv::Point2f& start, const cv::Point2f& goal,
                                           int n_iter, bool debug, bool plot) {
+    Eigen::Vector2d start_e(static_cast<double>(start.x), static_cast<double>(start.y));
+    Eigen::Vector2d goal_e(static_cast<double>(goal.x), static_cast<double>(goal.y));
+
     std::vector<Node> nodes;
-    nodes.push_back(Node(start, -1, 0.0));
+    nodes.push_back(Node(start_e, -1, 0.0));
     int best_goal_idx = -1;
     double best_cost = -1.0;
     double step2 = step_size_ * step_size_;
 
     for (int it = 0; it < n_iter; ++it) {
         if (it % 1000 == 0 && debug) {}
-        cv::Point2f xrand = (uniform_dist_(rng_) < goal_sample_rate_) ? goal : uniformSample();
-        if (!informedFilter(xrand, start, goal, best_cost)) continue;
+        Eigen::Vector2d xrand = (uniform_dist_(rng_) < goal_sample_rate_) ? goal_e : uniformSample();
+        if (!informedFilter(xrand, start_e, goal_e, best_cost)) continue;
 
         int nn_idx = findNearest(xrand, nodes);
         const Node& nearest = nodes[nn_idx];
-        cv::Point2f xnew = steer(nearest.pos, xrand);
+        Eigen::Vector2d xnew = steer(nearest.pos, xrand);
 
-        int ix = static_cast<int>(xnew.x), iy = static_cast<int>(xnew.y);
+        int ix = static_cast<int>(xnew.x()), iy = static_cast<int>(xnew.y());
         if (ix < 0 || iy < 0 || ix >= w_ || iy >= h_) continue;
         if (occ_.at<uchar>(iy, ix) != 0) continue;
         if (!collisionFree(nearest.pos, xnew)) continue;
@@ -185,8 +193,8 @@ std::vector<cv::Point2i> RRTPlanner::plan(const cv::Point2f& start, const cv::Po
             }
         }
 
-        if (sqdist(xnew, goal) <= step2) {
-            double total_cost = nodes[new_idx].cost + dist(xnew, goal);
+        if ((xnew - goal_e).squaredNorm() <= step2) {
+            double total_cost = nodes[new_idx].cost + dist(xnew, goal_e);
             if (best_cost < 0 || total_cost < best_cost) {
                 best_cost = total_cost;
                 best_goal_idx = new_idx;
@@ -199,33 +207,38 @@ std::vector<cv::Point2i> RRTPlanner::plan(const cv::Point2f& start, const cv::Po
     std::vector<cv::Point2f> path;
     int cur = best_goal_idx;
     while (cur != -1) {
-        path.push_back(nodes[cur].pos);
+        const Eigen::Vector2d& p = nodes[cur].pos;
+        path.push_back(cv::Point2f(static_cast<float>(p.x()), static_cast<float>(p.y())));
         cur = nodes[cur].parent;
     }
     std::reverse(path.begin(), path.end());
-    path.push_back(goal);
+    path.push_back(cv::Point2f(static_cast<float>(goal_e.x()), static_cast<float>(goal_e.y())));
 
     std::vector<cv::Point2f> filtered;
     filtered.push_back(path[0]);
     for (size_t i = 1; i < path.size(); ++i) {
-        if (path[i] != filtered.back()) filtered.push_back(path[i]);
+        if (path[i].x != filtered.back().x || path[i].y != filtered.back().y)
+            filtered.push_back(path[i]);
     }
 
     if (plot) {
         cv::Mat vis = grid_.clone();
         cv::cvtColor(vis, vis, cv::COLOR_GRAY2BGR);
         for (const Node& n : nodes) {
-            if (n.parent != -1)
-                cv::line(vis, cv::Point2i(static_cast<int>(n.pos.x), static_cast<int>(n.pos.y)),
-                         cv::Point2i(static_cast<int>(nodes[n.parent].pos.x),
-                                    static_cast<int>(nodes[n.parent].pos.y)), cv::Scalar(255, 0, 0), 1);
+            if (n.parent != -1) {
+                const Eigen::Vector2d& a = n.pos;
+                const Eigen::Vector2d& b = nodes[n.parent].pos;
+                cv::line(vis, cv::Point2i(static_cast<int>(a.x()), static_cast<int>(a.y())),
+                         cv::Point2i(static_cast<int>(b.x()), static_cast<int>(b.y())),
+                         cv::Scalar(255, 0, 0), 1);
+            }
         }
         for (size_t i = 0; i < filtered.size() - 1; ++i)
             cv::line(vis, cv::Point2i(static_cast<int>(filtered[i].x), static_cast<int>(filtered[i].y)),
                      cv::Point2i(static_cast<int>(filtered[i+1].x), static_cast<int>(filtered[i+1].y)),
                      cv::Scalar(0, 0, 255), 2);
-        cv::circle(vis, cv::Point2i(static_cast<int>(start.x), static_cast<int>(start.y)), 3, cv::Scalar(0, 255, 0), -1);
-        cv::circle(vis, cv::Point2i(static_cast<int>(goal.x), static_cast<int>(goal.y)), 3, cv::Scalar(0, 165, 255), -1);
+        cv::circle(vis, cv::Point2i(static_cast<int>(start_e.x()), static_cast<int>(start_e.y())), 3, cv::Scalar(0, 255, 0), -1);
+        cv::circle(vis, cv::Point2i(static_cast<int>(goal_e.x()), static_cast<int>(goal_e.y())), 3, cv::Scalar(0, 165, 255), -1);
         cv::imshow("RRT*", vis);
         cv::waitKey(1);
     }
