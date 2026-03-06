@@ -54,6 +54,35 @@ public:
     cv::Mat mergeWithStaticMap(const cv::Mat& live_occupancy) const;
 
     /**
+     * Build ego-centered, yaw-normalized 201×201 occupancy grid from points in map frame.
+     * Robot at (robot_x, robot_y, robot_yaw); points transformed to ego, kept if d <= 5m and z in [z_min, z_max].
+     * Grid origin so that pixel (100, 100) is robot center; 0=free, 255=obstacle.
+     * Used for agent-centered model input (training data format).
+     */
+    static cv::Mat pointcloudToEgoOccupancyGrid201(
+        const std::vector<std::array<float, 3>>& points_xyz,
+        double robot_x, double robot_y, double robot_yaw,
+        double z_min = 0.1, double z_max = 2.0);
+
+    /**
+     * Ego grid metadata: size 201×201, resolution and origin for OccupancyGrid message.
+     */
+    static constexpr int EGO_GRID_SIZE = 201;
+    static constexpr double EGO_RADIUS_M = 5.0;
+    static double egoGridResolution() { return 2.0 * EGO_RADIUS_M / (EGO_GRID_SIZE - 1); }
+    static double egoGridOriginX() { return -EGO_RADIUS_M; }
+    static double egoGridOriginY() { return EGO_RADIUS_M; }
+
+    /**
+     * Paste a 201×201 ego-frame occupancy grid into the full map grid.
+     * Rotates grid by anchor_yaw about its center, then places center at (anchor_x, anchor_y) in map.
+     * map_out must be pre-allocated (e.g. zeros or copy of static); non-free ego cells are written (max with existing).
+     */
+    void pasteEgoGridIntoMap(const cv::Mat& ego_grid,
+                             double anchor_x, double anchor_y, double anchor_yaw,
+                             cv::Mat& map_out) const;
+
+    /**
      * Convert path in grid indices (col, row) to world coordinates (x, y) in map frame.
      */
     std::vector<std::array<double, 2>> pathIndicesToWorld(

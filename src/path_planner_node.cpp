@@ -16,9 +16,12 @@
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <std_msgs/msg/header.hpp>
 
+#include "path_planning/msg/occupancy_grid_array.hpp"
+
 #include <opencv2/opencv.hpp>
 #include <vector>
 #include <array>
+#include <deque>
 #include <mutex>
 #include <cstring>
 #include <cmath>
@@ -74,6 +77,17 @@ public:
         // A* only: [beta_valley, smooth_alpha, smooth_beta, smooth_n_iter]; RRT ignores this (string or double array)
         declare_parameter("planner_settings", std::string("0.1,0.1,0.2,50"));
 
+        // Data source: "live" | "map_frame_model" | "agent_centered_model"
+        declare_parameter<std::string>("occ_data_mode", "live");
+        // Boltzmann temperature for weighting predicted grids (model modes only)
+        declare_parameter<double>("prediction_temperature", 1.0);
+        // Number of predicted frames we expect from map updater (model modes only)
+        declare_parameter<int>("num_predicted_frames", 5);
+        // Topic to publish 5 input grids to map updater (model modes only)
+        declare_parameter<std::string>("model_occ_input_topic", "/map_updater/occ_grid_input");
+        // Topic to subscribe for predicted grids from map updater (model modes only)
+        declare_parameter<std::string>("model_predicted_output_topic", "/map_updater/predicted_grid_output");
+
         std::string map_pcd = get_parameter("map_pcd_path").as_string();
         std::string map_png = get_parameter("map_png_path").as_string();
         if (map_pcd.empty() || map_png.empty()) {
@@ -95,6 +109,17 @@ public:
             "/goal_pose", 10, [this](const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
                 onGoal(msg);
             });
+
+        std::string mode = get_parameter("occ_data_mode").as_string();
+        if (mode == "map_frame_model" || mode == "agent_centered_model") {
+            std::string input_topic = get_parameter("model_occ_input_topic").as_string();
+            std::string output_topic = get_parameter("model_predicted_output_topic").as_string();
+            pub_model_input_ = create_publisher<path_planning::msg::OccupancyGridArray>(input_topic, 10);
+            sub_model_output_ = create_subscription<path_planning::msg::OccupancyGridArray>(
+                output_topic, 10, [this](const path_planning::msg::OccupancyGridArray::SharedPtr msg) {
+                    onPredictedGrids(msg);
+                });
+        }
 
         pub_path_ = create_publisher<nav_msgs::msg::Path>("/planned_path", 10);
         pub_waypoints_ = create_publisher<nav_msgs::msg::Path>("/waypoints", 10);
@@ -177,6 +202,133 @@ private:
         goal_y_ = msg->pose.position.y;
         have_goal_ = true;
         RCLCPP_INFO(get_logger(), "Received goal pose: x=%.3f, y=%.3f", goal_x_, goal_y_);
+    }
+
+    void onPredictedGrids(const path_planning::msg::OccupancyGridArray::SharedPtr msg) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        last_predicted_array_ = msg;
+    }
+
+    /** Build Boltzmann weights w_i = exp(-i/T) / Z for i = 0..n-1. */
+    static std::vector<double> boltmannWeights(int n, double T) {
+        if (n <= 0 || T <= 0) return {};
+        std::vector<double> w(n);
+        double Z = 0;
+        for (int i = 0; i < n; ++i) {
+            w[i] = std::exp(-static_cast<double>(i) / T);
+            Z += w[i];
+        }
+        if (Z > 0)
+            for (int i = 0; i < n; ++i) w[i] /= Z;
+        return w;
+    }
+
+    /** Weight-combine N occupancy grids (0-255) into one cv::Mat (0=free, 255=obstacle). */
+    static cv::Mat weightCombineGrids(const std::vector<cv::Mat>& grids, const std::vector<double>& weights) {
+        if (grids.empty() || weights.size() != grids.size()) return cv::Mat();
+        const int h = grids[0].rows, w = grids[0].cols;
+        cv::Mat sum = cv::Mat::zeros(h, w, CV_64F);
+        for (size_t k = 0; k < grids.size(); ++k) {
+            if (grids[k].rows != h || grids[k].cols != w) continue;
+            for (int r = 0; r < h; ++r)
+                for (int c = 0; c < w; ++c)
+                    sum.at<double>(r, c) += weights[k] * static_cast<double>(grids[k].at<uchar>(r, c));
+        }
+        cv::Mat out(h, w, CV_8UC1);
+        for (int r = 0; r < h; ++r)
+            for (int c = 0; c < w; ++c)
+                out.at<uchar>(r, c) = sum.at<double>(r, c) >= 127.5 ? 255 : 0;
+        return out;
+    }
+
+    /** Convert nav_msgs::OccupancyGrid to cv::Mat (0=free, 255=obstacle). */
+    static cv::Mat occupancyGridToMat(const nav_msgs::msg::OccupancyGrid& msg) {
+        int w = static_cast<int>(msg.info.width);
+        int h = static_cast<int>(msg.info.height);
+        if (w <= 0 || h <= 0 || msg.data.size() != static_cast<size_t>(w * h)) return cv::Mat();
+        cv::Mat m(h, w, CV_8UC1);
+        for (int i = 0; i < h * w; ++i) {
+            int8_t v = msg.data[i];
+            m.at<uchar>(i / w, i % w) = (v > 0) ? 255 : 0;
+        }
+        return m;
+    }
+
+    /** Publish a single cv::Mat as OccupancyGrid (0/255 -> 0/100). */
+    void publishOccupancyGrid(const cv::Mat& grid, const std::string& frame_id = "map",
+                             double origin_x = 0, double origin_y = 0, double resolution = 0.05) {
+        if (grid.empty()) return;
+        nav_msgs::msg::OccupancyGrid occ_msg;
+        occ_msg.header.frame_id = frame_id;
+        occ_msg.header.stamp = now();
+        occ_msg.info.resolution = static_cast<float>(resolution);
+        occ_msg.info.width = grid.cols;
+        occ_msg.info.height = grid.rows;
+        occ_msg.info.origin.position.x = origin_x;
+        occ_msg.info.origin.position.y = origin_y;
+        occ_msg.info.origin.position.z = 0.0;
+        occ_msg.info.origin.orientation.w = 1.0;
+        occ_msg.data.resize(static_cast<size_t>(grid.rows * grid.cols));
+        for (int r = 0; r < grid.rows; ++r)
+            for (int c = 0; c < grid.cols; ++c)
+                occ_msg.data[static_cast<size_t>(r * grid.cols + c)] = grid.at<uchar>(r, c) ? 100 : 0;
+        pub_occ_grid_->publish(occ_msg);
+    }
+
+    /** Build OccupancyGridArray from queue of cv::Mat grids (map frame: use bridge origin/res). */
+    path_planning::msg::OccupancyGridArray toOccupancyGridArrayMapFrame(
+        const std::deque<cv::Mat>& queue) const {
+        path_planning::msg::OccupancyGridArray arr;
+        arr.header.frame_id = "map";
+        arr.header.stamp = now();
+        for (const cv::Mat& g : queue) {
+            if (g.empty()) continue;
+            nav_msgs::msg::OccupancyGrid og;
+            og.header = arr.header;
+            og.info.resolution = static_cast<float>(bridge_.resolution());
+            og.info.width = g.cols;
+            og.info.height = g.rows;
+            og.info.origin.position.x = bridge_.xMin();
+            og.info.origin.position.y = bridge_.yMin();
+            og.info.origin.position.z = 0.0;
+            og.info.origin.orientation.w = 1.0;
+            og.data.resize(static_cast<size_t>(g.rows * g.cols));
+            for (int r = 0; r < g.rows; ++r)
+                for (int c = 0; c < g.cols; ++c)
+                    og.data[static_cast<size_t>(r * g.cols + c)] = g.at<uchar>(r, c) ? 100 : 0;
+            arr.grids.push_back(og);
+        }
+        return arr;
+    }
+
+    /** Build OccupancyGridArray from queue of 201x201 ego grids. */
+    path_planning::msg::OccupancyGridArray toOccupancyGridArrayEgo(
+        const std::deque<cv::Mat>& queue) const {
+        path_planning::msg::OccupancyGridArray arr;
+        arr.header.frame_id = "map";
+        arr.header.stamp = now();
+        double res = OccGridBridge::egoGridResolution();
+        double ox = OccGridBridge::egoGridOriginX();
+        double oy = OccGridBridge::egoGridOriginY();
+        for (const cv::Mat& g : queue) {
+            if (g.empty() || g.rows != OccGridBridge::EGO_GRID_SIZE || g.cols != OccGridBridge::EGO_GRID_SIZE)
+                continue;
+            nav_msgs::msg::OccupancyGrid og;
+            og.header = arr.header;
+            og.info.resolution = static_cast<float>(res);
+            og.info.width = g.cols;
+            og.info.height = g.rows;
+            og.info.origin.position.x = ox;
+            og.info.origin.position.y = oy;
+            og.info.origin.position.z = 0.0;
+            og.info.origin.orientation.w = 1.0;
+            og.data.resize(static_cast<size_t>(g.rows * g.cols));
+            for (int r = 0; r < g.rows; ++r)
+                for (int c = 0; c < g.cols; ++c)
+                    og.data[static_cast<size_t>(r * g.cols + c)] = g.at<uchar>(r, c) ? 100 : 0;
+            arr.grids.push_back(og);
+        }
+        return arr;
     }
 
     /**
@@ -270,6 +422,7 @@ private:
         double start_z, start_roll, start_pitch, start_yaw;
         bool have_pose, have_goal;
         std::vector<std::array<double, 2>> current_path;
+        path_planning::msg::OccupancyGridArray::SharedPtr predicted_msg;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             live_pts = live_points_;
@@ -283,8 +436,13 @@ private:
             goal_y = goal_y_;
             have_pose = have_pose_;
             have_goal = have_goal_;
-            current_path = current_path_;  // Copy current path
+            current_path = current_path_;
+            predicted_msg = last_predicted_array_;
         }
+
+        std::string mode = get_parameter("occ_data_mode").as_string();
+        double z_min = get_parameter("z_min").as_double();
+        double z_max = get_parameter("z_max").as_double();
 
         if (have_pose) {
             live_pts = transformPointsToMap(live_pts, start_x, start_y, start_z,
@@ -293,29 +451,90 @@ private:
             live_pts.clear();
         }
 
-        double z_min = get_parameter("z_min").as_double();
-        double z_max = get_parameter("z_max").as_double();
-        cv::Mat live_grid = bridge_.pointcloudToOccupancyGrid(live_pts, z_min, z_max);
-        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
-            "Live grid before overlay: %d x %d (cols x rows)",
-            live_grid.cols, live_grid.rows);
-        cv::Mat combined = bridge_.mergeWithStaticMap(live_grid);
+        cv::Mat combined;
+        if (mode == "live") {
+            cv::Mat live_grid = bridge_.pointcloudToOccupancyGrid(live_pts, z_min, z_max);
+            combined = bridge_.mergeWithStaticMap(live_grid);
+        } else if (mode == "map_frame_model") {
+            cv::Mat live_grid = bridge_.pointcloudToOccupancyGrid(live_pts, z_min, z_max);
+            cv::Mat current_combined = bridge_.mergeWithStaticMap(live_grid);
+            if (have_pose) {
+                std::lock_guard<std::mutex> lock(mutex_);
+                queue_map_frame_.push_back(current_combined);
+                while (queue_map_frame_.size() > 5u) queue_map_frame_.pop_front();
+            }
+            if (pub_model_input_ && have_pose) {
+                std::deque<cv::Mat> q;
+                { std::lock_guard<std::mutex> lock(mutex_); q = queue_map_frame_; }
+                if (q.size() == 5u) {
+                    path_planning::msg::OccupancyGridArray arr = toOccupancyGridArrayMapFrame(q);
+                    pub_model_input_->publish(arr);
+                }
+            }
+            if (predicted_msg && !predicted_msg->grids.empty()) {
+                int N = get_parameter("num_predicted_frames").as_int();
+                double T = get_parameter("prediction_temperature").as_double();
+                size_t n = std::min(static_cast<size_t>(N), predicted_msg->grids.size());
+                std::vector<cv::Mat> grids(n);
+                for (size_t i = 0; i < n; ++i)
+                    grids[i] = occupancyGridToMat(predicted_msg->grids[i]);
+                std::vector<double> w = boltmannWeights(static_cast<int>(n), T);
+                cv::Mat weighted = weightCombineGrids(grids, w);
+                if (!weighted.empty())
+                    combined = bridge_.mergeWithStaticMap(weighted);
+                else
+                    combined = current_combined;
+            } else {
+                combined = current_combined;
+            }
+        } else if (mode == "agent_centered_model") {
+            cv::Mat ego_grid;
+            if (have_pose) {
+                ego_grid = OccGridBridge::pointcloudToEgoOccupancyGrid201(
+                    live_pts, start_x, start_y, start_yaw, z_min, z_max);
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    queue_ego_.push_back(ego_grid);
+                    while (queue_ego_.size() > 5u) queue_ego_.pop_front();
+                    anchor_x_ = start_x;
+                    anchor_y_ = start_y;
+                    anchor_yaw_ = start_yaw;
+                }
+                if (pub_model_input_ && queue_ego_.size() == 5u) {
+                    path_planning::msg::OccupancyGridArray arr = toOccupancyGridArrayEgo(queue_ego_);
+                    pub_model_input_->publish(arr);
+                }
+            }
+            if (predicted_msg && !predicted_msg->grids.empty()) {
+                int N = get_parameter("num_predicted_frames").as_int();
+                double T = get_parameter("prediction_temperature").as_double();
+                size_t n = std::min(static_cast<size_t>(N), predicted_msg->grids.size());
+                std::vector<cv::Mat> grids(n);
+                for (size_t i = 0; i < n; ++i)
+                    grids[i] = occupancyGridToMat(predicted_msg->grids[i]);
+                std::vector<double> w = boltmannWeights(static_cast<int>(n), T);
+                cv::Mat weighted_ego = weightCombineGrids(grids, w);
+                if (!weighted_ego.empty()) {
+                    double ax, ay, ayaw;
+                    { std::lock_guard<std::mutex> lock(mutex_); ax = anchor_x_; ay = anchor_y_; ayaw = anchor_yaw_; }
+                    combined = bridge_.mergeWithStaticMap(cv::Mat::zeros(bridge_.gridHeight(), bridge_.gridWidth(), CV_8UC1));
+                    bridge_.pasteEgoGridIntoMap(weighted_ego, ax, ay, ayaw, combined);
+                } else {
+                    combined = bridge_.mergeWithStaticMap(cv::Mat::zeros(bridge_.gridHeight(), bridge_.gridWidth(), CV_8UC1));
+                }
+            } else {
+                combined = bridge_.mergeWithStaticMap(cv::Mat::zeros(bridge_.gridHeight(), bridge_.gridWidth(), CV_8UC1));
+            }
+        } else {
+            cv::Mat live_grid = bridge_.pointcloudToOccupancyGrid(live_pts, z_min, z_max);
+            combined = bridge_.mergeWithStaticMap(live_grid);
+        }
 
-        // Publish current combined occupancy grid for visualization (map frame: origin + resolution)
-        nav_msgs::msg::OccupancyGrid occ_msg;
-        occ_msg.header.frame_id = "map";
-        occ_msg.header.stamp = now();
-        occ_msg.info.resolution = static_cast<float>(bridge_.resolution());
-        occ_msg.info.width = combined.cols;
-        occ_msg.info.height = combined.rows;
-        occ_msg.info.origin.position.x = bridge_.xMin();
-        occ_msg.info.origin.position.y = bridge_.yMin();
-        occ_msg.info.origin.position.z = 0.0;
-        occ_msg.info.origin.orientation.w = 1.0;
-        occ_msg.data.resize(combined.rows * combined.cols);
-        for (size_t i = 0; i < occ_msg.data.size(); ++i)
-            occ_msg.data[i] = combined.data[i] ? 100 : 0;  // OccupancyGrid: 0=free, 100=occupied
-        pub_occ_grid_->publish(occ_msg);
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
+            "Combined grid: %d x %d (mode=%s)", combined.cols, combined.rows, mode.c_str());
+
+        // Publish current combined occupancy grid for visualization
+        publishOccupancyGrid(combined, "map", bridge_.xMin(), bridge_.yMin(), bridge_.resolution());
 
         if (!have_pose || !have_goal) {
             return;
@@ -460,18 +679,24 @@ private:
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pub_path_;
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pub_waypoints_;
     rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr pub_occ_grid_;
+    rclcpp::Publisher<path_planning::msg::OccupancyGridArray>::SharedPtr pub_model_input_;
+    rclcpp::Subscription<path_planning::msg::OccupancyGridArray>::SharedPtr sub_model_output_;
     rclcpp::TimerBase::SharedPtr plan_timer_;
 
     std::mutex mutex_;
     std::vector<std::array<float, 3>> live_points_;
     double start_x_ = 0, start_y_ = 0, goal_x_ = 0, goal_y_ = 0;
     double start_z_ = 0;
-    double start_roll_ = 0;
-    double start_pitch_ = 0;
-    double start_yaw_ = 0;
+    double start_roll_ = 0, start_pitch_ = 0, start_yaw_ = 0;
     bool have_pose_ = false, have_goal_ = false;
-    std::vector<std::array<double, 2>> current_path_;  // Current planned path in world coordinates
-    rclcpp::Time last_plan_time_{0};  // Time of last successful plan (for replan clock)
+    std::vector<std::array<double, 2>> current_path_;
+    rclcpp::Time last_plan_time_{0};
+
+    // Model modes: queues of 5 grids and last predicted message
+    std::deque<cv::Mat> queue_map_frame_;
+    std::deque<cv::Mat> queue_ego_;
+    path_planning::msg::OccupancyGridArray::SharedPtr last_predicted_array_;
+    double anchor_x_ = 0, anchor_y_ = 0, anchor_yaw_ = 0;
 };
 
 int main(int argc, char** argv) {

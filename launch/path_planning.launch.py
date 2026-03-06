@@ -42,6 +42,12 @@ def generate_launch_description():
     planner = LaunchConfiguration("planner")
     planner_settings_str = LaunchConfiguration("planner_settings", default="0.1,0.1,0.2,50")
 
+    occ_data_mode = LaunchConfiguration("occ_data_mode", default="live")
+    prediction_temperature = LaunchConfiguration("prediction_temperature", default="3.0")
+    num_predicted_frames = LaunchConfiguration("num_predicted_frames", default="5")
+    model_occ_input_topic = LaunchConfiguration("model_occ_input_topic", default="/map_updater/occ_grid_input")
+    model_predicted_output_topic = LaunchConfiguration("model_predicted_output_topic", default="/map_updater/predicted_grid_output")
+
     return LaunchDescription(
         [
             # Path to the PCD map file
@@ -108,6 +114,12 @@ def generate_launch_description():
             DeclareLaunchArgument("planner", default_value="astar"),
             # A* only: [beta_valley,smooth_alpha,smooth_beta,smooth_n_iter]; RRT ignores
             DeclareLaunchArgument("planner_settings", default_value="0.1,0.2,0.2,30"),
+            # Occupancy data source: 'live' | 'map_frame_model' | 'agent_centered_model'
+            DeclareLaunchArgument("occ_data_mode", default_value="live"),
+            DeclareLaunchArgument("prediction_temperature", default_value="1.0"),
+            DeclareLaunchArgument("num_predicted_frames", default_value="5"),
+            DeclareLaunchArgument("model_occ_input_topic", default_value="/map_updater/occ_grid_input"),
+            DeclareLaunchArgument("model_predicted_output_topic", default_value="/map_updater/predicted_grid_output"),
             Node(
                 package="path_planning",
                 executable="path_planner_node",
@@ -133,6 +145,11 @@ def generate_launch_description():
                         "goal_in_pixels": goal_in_pixels,
                         "planner": planner,
                         "planner_settings": planner_settings_str,
+                        "occ_data_mode": occ_data_mode,
+                        "prediction_temperature": prediction_temperature,
+                        "num_predicted_frames": num_predicted_frames,
+                        "model_occ_input_topic": model_occ_input_topic,
+                        "model_predicted_output_topic": model_predicted_output_topic,
                     }
                 ],
                 remappings=[

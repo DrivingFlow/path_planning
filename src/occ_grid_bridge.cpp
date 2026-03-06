@@ -2,6 +2,7 @@
 #include <fstream>
 #include <sstream>
 #include <algorithm>
+#include <cmath>
 
 namespace {
 
@@ -130,6 +131,63 @@ cv::Mat OccGridBridge::mergeWithStaticMap(const cv::Mat& live_occupancy) const {
     cv::Mat combined;
     cv::max(static_map_, live_occupancy, combined);
     return combined;
+}
+
+cv::Mat OccGridBridge::pointcloudToEgoOccupancyGrid201(
+    const std::vector<std::array<float, 3>>& points_xyz,
+    double robot_x, double robot_y, double robot_yaw,
+    double z_min, double z_max) {
+    const int sz = EGO_GRID_SIZE;
+    const double res = egoGridResolution();
+    const double ox = egoGridOriginX();
+    const double oy = egoGridOriginY();
+    const double cy = std::cos(robot_yaw);
+    const double sy = std::sin(robot_yaw);
+    const double r2_max = EGO_RADIUS_M * EGO_RADIUS_M;
+
+    cv::Mat grid = cv::Mat::zeros(sz, sz, CV_8UC1);
+    for (const auto& pt : points_xyz) {
+        double x = pt[0], y = pt[1], z = pt[2];
+        if (z < z_min || z > z_max) continue;
+        double dx = x - robot_x;
+        double dy = y - robot_y;
+        double ego_x = cy * dx + sy * dy;
+        double ego_y = -sy * dx + cy * dy;
+        if (ego_x * ego_x + ego_y * ego_y > r2_max) continue;
+        int col = static_cast<int>((ego_x - ox) / res);
+        int row = static_cast<int>((oy - ego_y) / res);
+        if (col >= 0 && col < sz && row >= 0 && row < sz)
+            grid.at<uchar>(row, col) = 255;
+    }
+    return grid;
+}
+
+void OccGridBridge::pasteEgoGridIntoMap(const cv::Mat& ego_grid,
+                                        double anchor_x, double anchor_y, double anchor_yaw,
+                                        cv::Mat& map_out) const {
+    if (ego_grid.rows != EGO_GRID_SIZE || ego_grid.cols != EGO_GRID_SIZE || map_out.empty())
+        return;
+    const double res_ego = egoGridResolution();
+    const double ox_ego = egoGridOriginX();
+    const double oy_ego = egoGridOriginY();
+    const double cy = std::cos(anchor_yaw);
+    const double sy = std::sin(anchor_yaw);
+
+    for (int r = 0; r < EGO_GRID_SIZE; ++r) {
+        for (int c = 0; c < EGO_GRID_SIZE; ++c) {
+            if (ego_grid.at<uchar>(r, c) == 0) continue;
+            double ego_x = ox_ego + c * res_ego;
+            double ego_y = oy_ego - r * res_ego;
+            double map_x = anchor_x + cy * ego_x - sy * ego_y;
+            double map_y = anchor_y + sy * ego_x + cy * ego_y;
+            int col, row;
+            worldToGrid(map_x, map_y, col, row);
+            if (col >= 0 && col < w_ && row >= 0 && row < h_) {
+                uchar prev = map_out.at<uchar>(row, col);
+                if (255 > prev) map_out.at<uchar>(row, col) = 255;
+            }
+        }
+    }
 }
 
 std::vector<std::array<double, 2>> OccGridBridge::pathIndicesToWorld(

@@ -10,9 +10,17 @@ find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(Eigen3 REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
+
+# Custom message: array of occupancy grids for map updater input/output
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/OccupancyGridArray.msg"
+  DEPENDENCIES std_msgs nav_msgs
+)
 
 # Bridge + RRT library (no ROS)
 # Use OpenCV_LIBS / OpenCV_INCLUDE_DIRS for compatibility with Ubuntu's libopencv-dev (OpenCV config may not export OpenCV:: targets)
@@ -32,7 +40,7 @@ target_link_libraries(path_planning_core ${OpenCV_LIBS})
 add_executable(path_planner_node src/path_planner_node.cpp)
 target_include_directories(path_planner_node PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(path_planner_node path_planning_core)
-ament_target_dependencies(path_planner_node rclcpp sensor_msgs geometry_msgs nav_msgs tf2)
+ament_target_dependencies(path_planner_node rclcpp sensor_msgs geometry_msgs nav_msgs std_msgs tf2 ${PROJECT_NAME})
 
 add_executable(visualize_waypoints_occ_cpp scripts/visualize_waypoints_occ.cpp)
 target_include_directories(visualize_waypoints_occ_cpp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${EIGEN3_INCLUDE_DIR})
@@ -51,6 +59,10 @@ install(PROGRAMS
 )
 
 install(DIRECTORY launch
+  DESTINATION share/${PROJECT_NAME}
+)
+
+install(DIRECTORY msg
   DESTINATION share/${PROJECT_NAME}
 )
 
