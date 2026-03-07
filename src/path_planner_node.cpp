@@ -259,7 +259,16 @@ private:
         cv::Mat m(h, w, CV_8UC1);
         for (int i = 0; i < h * w; ++i) {
             int8_t v = msg.data[i];
-            m.at<uchar>(i / w, i % w) = (v > 0) ? 255 : 0;
+            // Handle both standard occupancy values (0-100) and model output (0-1 range stored as 0 or 1)
+            // If v is 0 or 1, assume it's from a model that outputs 0-1 range and scale to 0-255
+            if (v == 1) {
+                m.at<uchar>(i / w, i % w) = 255;
+            } else if (v > 1) {
+                // Standard occupancy grid format: treat any value > 0 as obstacle
+                m.at<uchar>(i / w, i % w) = 255;
+            } else {
+                m.at<uchar>(i / w, i % w) = 0;
+            }
         }
         return m;
     }

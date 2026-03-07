@@ -94,7 +94,7 @@ def generate_launch_description():
             # Whether to show energy / clearance map beside binary map in C++ visualizer
             DeclareLaunchArgument("show_energy_map", default_value="True"),
             # Whether to show agent-centered 5 m radius ROI panel in C++ visualizer (independent of energy map)
-            DeclareLaunchArgument("show_agent_centered_roi", default_value="True"),
+            DeclareLaunchArgument("show_agent_centered_roi", default_value="False"),
             # Minimum column for visualization view; -1 = full grid width
             DeclareLaunchArgument("view_col_min", default_value="375"),
             # Maximum column for visualization view; -1 = full grid width
