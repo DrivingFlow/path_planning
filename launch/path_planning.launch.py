@@ -118,7 +118,7 @@ def generate_launch_description():
             # A* only: [beta_valley,smooth_alpha,smooth_beta,smooth_n_iter]; RRT ignores
             DeclareLaunchArgument("planner_settings", default_value="0.1,0.2,0.2,30"),
             # Occupancy data source: 'live' | 'map_frame_model' | 'agent_centered_model'
-            DeclareLaunchArgument("occ_data_mode", default_value="live"),
+            DeclareLaunchArgument("occ_data_mode", default_value="agent_centered_model"),
             DeclareLaunchArgument("prediction_temperature", default_value="1.0"),
             DeclareLaunchArgument("num_predicted_frames", default_value="5"),
             DeclareLaunchArgument("model_occ_input_topic", default_value="/map_updater/occ_grid_input"),
