@@ -41,6 +41,13 @@
 // Placeholder: replace with your waypoint message type if different (e.g. nav_msgs/Path or custom)
 using WaypointArray = std::vector<std::array<double, 2>>;
 
+/** One ego-centered input frame: grid + pose + time for motion computation. */
+struct EgoFrame {
+    cv::Mat grid;
+    double x = 0, y = 0, yaw = 0;
+    rclcpp::Time time{0};
+};
+
 class PathPlannerNode : public rclcpp::Node {
 public:
     PathPlannerNode() : Node("path_planner") {
@@ -301,32 +308,85 @@ private:
         return arr;
     }
 
-    /** Build OccupancyGridArray from queue of 201x201 ego grids. */
+    /** Build OccupancyGridArray from queue of 201x201 ego grids (agent-centered: 5 frames).
+     * Now matches save_frame training: 10 grids = occ_0, delta_0, occ_1, delta_1, ..., occ_4, delta_4
+     * (delta_0 = zeros). Delta encoded as 0-100: 0=-1, 50=0, 100=+1.
+     * Plus motion_forward_speed and motion_yaw_rate (length 5; first element 0).
+     */
     path_planning::msg::OccupancyGridArray toOccupancyGridArrayEgo(
-        const std::deque<cv::Mat>& queue) const {
+        const std::deque<EgoFrame>& queue) const {
         path_planning::msg::OccupancyGridArray arr;
         arr.header.frame_id = "map";
         arr.header.stamp = now();
-        double res = OccGridBridge::egoGridResolution();
-        double ox = OccGridBridge::egoGridOriginX();
-        double oy = OccGridBridge::egoGridOriginY();
-        for (const cv::Mat& g : queue) {
-            if (g.empty() || g.rows != OccGridBridge::EGO_GRID_SIZE || g.cols != OccGridBridge::EGO_GRID_SIZE)
-                continue;
+        const double res = OccGridBridge::egoGridResolution();
+        const double ox = OccGridBridge::egoGridOriginX();
+        const double oy = OccGridBridge::egoGridOriginY();
+        const int sz = OccGridBridge::EGO_GRID_SIZE;
+
+        if (queue.size() != 5u) return arr;
+
+        auto pushGrid = [&](const cv::Mat& g, bool as_occupancy) {
             nav_msgs::msg::OccupancyGrid og;
             og.header = arr.header;
             og.info.resolution = static_cast<float>(res);
-            og.info.width = g.cols;
-            og.info.height = g.rows;
+            og.info.width = sz;
+            og.info.height = sz;
             og.info.origin.position.x = ox;
             og.info.origin.position.y = oy;
             og.info.origin.position.z = 0.0;
             og.info.origin.orientation.w = 1.0;
-            og.data.resize(static_cast<size_t>(g.rows * g.cols));
-            for (int r = 0; r < g.rows; ++r)
-                for (int c = 0; c < g.cols; ++c)
-                    og.data[static_cast<size_t>(r * g.cols + c)] = g.at<uchar>(r, c) ? 100 : 0;
+            og.data.resize(static_cast<size_t>(sz * sz));
+            for (int r = 0; r < sz; ++r)
+                for (int c = 0; c < sz; ++c) {
+                    int v = as_occupancy ? (g.at<uchar>(r, c) ? 100 : 0) : static_cast<int>(g.at<uchar>(r, c));
+                    og.data[static_cast<size_t>(r * sz + c)] = static_cast<int8_t>(std::max(0, std::min(100, v)));
+                }
             arr.grids.push_back(og);
+        };
+
+        std::vector<cv::Mat> occ_float(5);
+        for (size_t i = 0; i < 5u; ++i) {
+            occ_float[i] = cv::Mat(sz, sz, CV_32FC1);
+            for (int r = 0; r < sz; ++r)
+                for (int c = 0; c < sz; ++c)
+                    occ_float[i].at<float>(r, c) = queue[i].grid.at<uchar>(r, c) ? 1.f : 0.f;
+        }
+
+        for (size_t i = 0; i < 5u; ++i) {
+            pushGrid(queue[i].grid, true);
+            cv::Mat delta_enc(sz, sz, CV_8UC1);
+            if (i == 0) {
+                delta_enc.setTo(50);
+            } else {
+                for (int r = 0; r < sz; ++r)
+                    for (int c = 0; c < sz; ++c) {
+                        float d = occ_float[i].at<float>(r, c) - occ_float[i - 1].at<float>(r, c);
+                        int v = static_cast<int>(std::round((d + 1.f) * 50.f));
+                        delta_enc.at<uchar>(r, c) = static_cast<uchar>(std::max(0, std::min(100, v)));
+                    }
+            }
+            pushGrid(delta_enc, false);
+        }
+
+        arr.motion_forward_speed.resize(5);
+        arr.motion_yaw_rate.resize(5);
+        arr.motion_forward_speed[0] = 0.f;
+        arr.motion_yaw_rate[0] = 0.f;
+        for (size_t j = 1; j < 5u; ++j) {
+            const EgoFrame& curr = queue[j];
+            const EgoFrame& prev = queue[j - 1];
+            double dt = (curr.time - prev.time).seconds();
+            if (dt < 1e-6) dt = 1e-6;
+            double dx = curr.x - prev.x;
+            double dy = curr.y - prev.y;
+            double cy = std::cos(curr.yaw);
+            double sy = std::sin(curr.yaw);
+            double body_x = cy * dx + sy * dy;
+            double dyaw = curr.yaw - prev.yaw;
+            while (dyaw > 3.141592653589793) dyaw -= 2.0 * 3.141592653589793;
+            while (dyaw < -3.141592653589793) dyaw += 2.0 * 3.141592653589793;
+            arr.motion_forward_speed[j] = static_cast<float>(body_x / dt);
+            arr.motion_yaw_rate[j] = static_cast<float>(dyaw / dt);
         }
         return arr;
     }
@@ -488,20 +548,27 @@ private:
                 combined = current_combined;
             }
         } else if (mode == "agent_centered_model") {
-            cv::Mat ego_grid;
             if (have_pose) {
-                ego_grid = OccGridBridge::pointcloudToEgoOccupancyGrid201(
+                cv::Mat ego_grid = OccGridBridge::pointcloudToEgoOccupancyGrid201(
                     live_pts, start_x, start_y, start_yaw, z_min, z_max);
+                EgoFrame frame;
+                frame.grid = ego_grid;
+                frame.x = start_x;
+                frame.y = start_y;
+                frame.yaw = start_yaw;
+                frame.time = now();
                 {
                     std::lock_guard<std::mutex> lock(mutex_);
-                    queue_ego_.push_back(ego_grid);
-                    while (queue_ego_.size() > 5u) queue_ego_.pop_front();
-                    anchor_x_ = start_x;
-                    anchor_y_ = start_y;
-                    anchor_yaw_ = start_yaw;
+                    queue_ego_frames_.push_back(frame);
+                    while (queue_ego_frames_.size() > 5u) queue_ego_frames_.pop_front();
+                    anchor_x_ = queue_ego_frames_.back().x;
+                    anchor_y_ = queue_ego_frames_.back().y;
+                    anchor_yaw_ = queue_ego_frames_.back().yaw;
                 }
-                if (pub_model_input_ && queue_ego_.size() == 5u) {
-                    path_planning::msg::OccupancyGridArray arr = toOccupancyGridArrayEgo(queue_ego_);
+                if (pub_model_input_ && queue_ego_frames_.size() == 5u) {
+                    std::deque<EgoFrame> q;
+                    { std::lock_guard<std::mutex> lock(mutex_); q = queue_ego_frames_; }
+                    path_planning::msg::OccupancyGridArray arr = toOccupancyGridArrayEgo(q);
                     pub_model_input_->publish(arr);
                 }
             }
@@ -692,9 +759,9 @@ private:
     std::vector<std::array<double, 2>> current_path_;
     rclcpp::Time last_plan_time_{0};
 
-    // Model modes: queues of 5 grids and last predicted message
+    // Model modes: queues and last predicted message
     std::deque<cv::Mat> queue_map_frame_;
-    std::deque<cv::Mat> queue_ego_;
+    std::deque<EgoFrame> queue_ego_frames_;
     path_planning::msg::OccupancyGridArray::SharedPtr last_predicted_array_;
     double anchor_x_ = 0, anchor_y_ = 0, anchor_yaw_ = 0;
 };
