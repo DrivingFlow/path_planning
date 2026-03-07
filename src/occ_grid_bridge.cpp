@@ -190,6 +190,30 @@ void OccGridBridge::pasteEgoGridIntoMap(const cv::Mat& ego_grid,
     }
 }
 
+void OccGridBridge::zeroEgoFootprintInMap(double anchor_x, double anchor_y, double anchor_yaw,
+                                          cv::Mat& map_out) const {
+    if (map_out.empty() || map_out.cols != w_ || map_out.rows != h_)
+        return;
+    const double res_ego = egoGridResolution();
+    const double ox_ego = egoGridOriginX();
+    const double oy_ego = egoGridOriginY();
+    const double cy = std::cos(anchor_yaw);
+    const double sy = std::sin(anchor_yaw);
+
+    for (int r = 0; r < EGO_GRID_SIZE; ++r) {
+        for (int c = 0; c < EGO_GRID_SIZE; ++c) {
+            double ego_x = ox_ego + c * res_ego;
+            double ego_y = oy_ego - r * res_ego;
+            double map_x = anchor_x + cy * ego_x - sy * ego_y;
+            double map_y = anchor_y + sy * ego_x + cy * ego_y;
+            int col, row;
+            worldToGrid(map_x, map_y, col, row);
+            if (col >= 0 && col < w_ && row >= 0 && row < h_)
+                map_out.at<uchar>(row, col) = 0;
+        }
+    }
+}
+
 std::vector<std::array<double, 2>> OccGridBridge::pathIndicesToWorld(
     const std::vector<cv::Point2i>& path_indices) const {
     std::vector<std::array<double, 2>> out;

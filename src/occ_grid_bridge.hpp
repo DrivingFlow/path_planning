@@ -83,6 +83,13 @@ public:
                              cv::Mat& map_out) const;
 
     /**
+     * Zero out the map region covered by the ego footprint (same transform as pasteEgoGridIntoMap).
+     * Used for cookie-cutter: call before pasteEgoGridIntoMap so planning uses only predictions in the agent subspace.
+     */
+    void zeroEgoFootprintInMap(double anchor_x, double anchor_y, double anchor_yaw,
+                               cv::Mat& map_out) const;
+
+    /**
      * Convert path in grid indices (col, row) to world coordinates (x, y) in map frame.
      */
     std::vector<std::array<double, 2>> pathIndicesToWorld(

@@ -39,3 +39,20 @@ source install/setup.bash
    ros2 run path_planning visualize_waypoints_occ.py --ros-args --occ-topic /occupancy_grid --path-topic /planned_path --waypoints-topic /waypoints --pose-topic /pcl_pose
    ```
    Or run the script directly: `python3 scripts/visualize_waypoints_occ.py --rate 10`.
+
+## Occupancy data modes and model integration
+
+The node can run in three occupancy modes (`occ_data_mode`): **live**, **map_frame_model**, or **agent_centered_model**. In the two model modes, the node publishes input grids to a map-updater/model node and subscribes to predicted grids; planning then uses a **cookie-cutter** combination: static map everywhere except in the region of interest (ROI), where only the weighted predictions are used.
+
+- **map_frame_model:** ROI is the axis-aligned rectangle given by `sample_col_min/max`, `sample_row_min/max`. The crop is centered on a 1216×1216 canvas for the model; predictions (1216×1216) are cookie-cut and pasted back into that rectangle on the full map.
+- **agent_centered_model:** ROI is the ego-centered 201×201 subspace (≈10 m × 10 m) at the anchor pose. The map region covered by that ego footprint is zeroed, then the weighted predicted ego grid is pasted at the anchor using the same transform.
+
+### Placing the predicted ego grid on the map (rotation)
+
+The predicted agent-centered grid is in ego frame (robot-centered, robot-facing). To place it on the full map we do **not** rotate the occupancy image in discrete pixel space. Instead we use a **continuous world-space transform** and then snap to the map grid:
+
+- For each ego-grid cell (row, col), we compute its position in ego world coordinates (meters) using the ego grid resolution and origin.
+- We apply the 2D rotation by the anchor yaw and add the anchor position to get map-frame world coordinates.
+- We convert (map_x, map_y) to map grid indices with `worldToGrid` and write the occupancy there.
+
+So rotation is handled in meters; we never rotate the 201×201 image by an angle in pixel space (which would require interpolation or leave gaps). Each ego cell maps to one map cell; multiple ego cells can land in the same map cell, and some map cells in the rotated footprint may not be hit (forward mapping). This keeps the implementation simple and avoids sub-pixel artifacts.

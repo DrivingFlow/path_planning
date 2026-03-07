@@ -695,6 +695,7 @@ private:
                     double ax, ay, ayaw;
                     { std::lock_guard<std::mutex> lock(mutex_); ax = anchor_x_; ay = anchor_y_; ayaw = anchor_yaw_; }
                     combined = bridge_.mergeWithStaticMap(cv::Mat::zeros(bridge_.gridHeight(), bridge_.gridWidth(), CV_8UC1));
+                    bridge_.zeroEgoFootprintInMap(ax, ay, ayaw, combined);
                     bridge_.pasteEgoGridIntoMap(weighted_ego, ax, ay, ayaw, combined);
                 } else {
                     combined = bridge_.mergeWithStaticMap(cv::Mat::zeros(bridge_.gridHeight(), bridge_.gridWidth(), CV_8UC1));
