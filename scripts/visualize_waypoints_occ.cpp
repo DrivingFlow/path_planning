@@ -36,6 +36,7 @@ public:
         view_row_min_ = declare_parameter<int>("view_row_min", -1);
         view_row_max_ = declare_parameter<int>("view_row_max", -1);
         show_energy_map_ = declare_parameter<bool>("show_energy_map", true);
+        show_agent_centered_roi_ = declare_parameter<bool>("show_agent_centered_roi", true);
         sub_occ_ = create_subscription<nav_msgs::msg::OccupancyGrid>(
             occ_topic, 10, [this](const nav_msgs::msg::OccupancyGrid::SharedPtr msg) {
                 onOcc(msg);
@@ -359,12 +360,87 @@ private:
             drawLabel(view_occ, "col,row: out of bounds");
         }
 
-        // Build single combined view: occupancy on the left, energy map on the right
-        cv::Mat combined;
+        // Build single combined view: occupancy on the left, energy map and/or agent-centered ROI as needed
+        cv::Mat combined = view_occ;
         if (show_energy_map_ && !view_energy.empty()) {
-            cv::hconcat(view_occ, view_energy, combined);
-        } else {
-            combined = view_occ;
+            cv::hconcat(combined, view_energy, combined);
+        }
+
+        if (show_agent_centered_roi_ && robot.has_value()) {
+            const double agent_radius_m = 5.0;
+            double rx = robot->x;
+            double ry = robot->y;
+            double wx_lo = rx - agent_radius_m;
+            double wx_hi = rx + agent_radius_m;
+            double wy_lo = ry - agent_radius_m;
+            double wy_hi = ry + agent_radius_m;
+            double ox = occ.origin_x;
+            double oy = occ.origin_y;
+            double res = occ.resolution;
+            int h = occ.height;
+            int w = occ.width;
+            int ac_col_min = static_cast<int>(std::floor((wx_lo - ox) / res));
+            int ac_col_max = static_cast<int>(std::ceil((wx_hi - ox) / res));
+            int ac_row_min = static_cast<int>(std::floor((oy + (h - 1) * res - wy_hi) / res));
+            int ac_row_max = static_cast<int>(std::ceil((oy + (h - 1) * res - wy_lo) / res));
+            ac_col_min = std::max(0, std::min(ac_col_min, w - 1));
+            ac_col_max = std::max(0, std::min(ac_col_max, w - 1));
+            ac_row_min = std::max(0, std::min(ac_row_min, h - 1));
+            ac_row_max = std::max(0, std::min(ac_row_max, h - 1));
+            if (ac_col_max < ac_col_min) std::swap(ac_col_min, ac_col_max);
+            if (ac_row_max < ac_row_min) std::swap(ac_row_min, ac_row_max);
+
+            cv::Rect ac_roi(ac_col_min, ac_row_min, ac_col_max - ac_col_min + 1, ac_row_max - ac_row_min + 1);
+            if (ac_roi.width > 0 && ac_roi.height > 0) {
+                cv::Mat view_agent = vis(ac_roi).clone();
+                cv::Point ac_offset(ac_col_min, ac_row_min);
+
+                auto draw_polyline_agent = [&](const std::vector<cv::Point2d>& pts, const cv::Scalar& color) {
+                    if (pts.size() < 2) return;
+                    for (size_t i = 1; i < pts.size(); ++i) {
+                        cv::Point p0, p1;
+                        if (worldToPixel(occ, pts[i - 1], p0) && worldToPixel(occ, pts[i], p1)) {
+                            cv::Point q0 = p0 - ac_offset;
+                            cv::Point q1 = p1 - ac_offset;
+                            if (q0.x >= 0 && q0.x < view_agent.cols && q0.y >= 0 && q0.y < view_agent.rows &&
+                                q1.x >= 0 && q1.x < view_agent.cols && q1.y >= 0 && q1.y < view_agent.rows)
+                                cv::line(view_agent, q0, q1, color, 2);
+                        }
+                    }
+                };
+                draw_polyline_agent(path, cv::Scalar(255, 0, 0));
+                for (const auto& wp : waypoints) {
+                    cv::Point p;
+                    if (worldToPixel(occ, wp, p)) {
+                        cv::Point p_local = p - ac_offset;
+                        if (p_local.x >= 0 && p_local.x < view_agent.cols && p_local.y >= 0 && p_local.y < view_agent.rows)
+                            cv::circle(view_agent, p_local, 3, cv::Scalar(0, 0, 255), -1);
+                    }
+                }
+                if (robot.has_value()) {
+                    cv::Point p;
+                    if (worldToPixel(occ, robot.value(), p)) {
+                        cv::Point p_local = p - ac_offset;
+                        if (p_local.x >= 0 && p_local.x < view_agent.cols && p_local.y >= 0 && p_local.y < view_agent.rows)
+                            cv::circle(view_agent, p_local, 6, cv::Scalar(0, 255, 0), -1);
+                    }
+                }
+                if (goal.has_value()) {
+                    cv::Point p;
+                    if (worldToPixel(occ, goal.value(), p)) {
+                        cv::Point p_local = p - ac_offset;
+                        if (p_local.x >= 0 && p_local.x < view_agent.cols && p_local.y >= 0 && p_local.y < view_agent.rows)
+                            cv::drawMarker(view_agent, p_local, cv::Scalar(0, 255, 255), cv::MARKER_STAR, 12, 2);
+                    }
+                }
+                int baseline = 0;
+                cv::Size text_size = cv::getTextSize("Agent 5m", cv::FONT_HERSHEY_SIMPLEX, 0.5, 1, &baseline);
+                cv::rectangle(view_agent, cv::Rect(2, 2, text_size.width + 6, text_size.height + baseline + 6),
+                              cv::Scalar(255, 255, 255), cv::FILLED);
+                cv::putText(view_agent, "Agent 5m", cv::Point(5, 5 + text_size.height),
+                            cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 0, 0), 1);
+                cv::hconcat(combined, view_agent, combined);
+            }
         }
 
         cv::resizeWindow(window_name_, combined.cols, combined.rows);
@@ -393,6 +469,7 @@ private:
     int view_row_min_ = -1;
     int view_row_max_ = -1;
     bool show_energy_map_ = true;
+    bool show_agent_centered_roi_ = false;
     const std::string window_name_ = "Occupancy grid + waypoints (map frame)";
 
     std::mutex mouse_mutex_;
