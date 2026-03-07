@@ -48,6 +48,9 @@ struct EgoFrame {
     rclcpp::Time time{0};
 };
 
+/** Canvas size for map_frame_model: crop is centered on this (1216 x 1216). */
+static constexpr int MAP_FRAME_CANVAS_SIZE = 1216;
+
 class PathPlannerNode : public rclcpp::Node {
 public:
     PathPlannerNode() : Node("path_planner") {
@@ -282,27 +285,119 @@ private:
         pub_occ_grid_->publish(occ_msg);
     }
 
-    /** Build OccupancyGridArray from queue of cv::Mat grids (map frame: use bridge origin/res). */
+    /** Crop full map using sample_* bounds and center on 1216x1216 canvas (unoccupied = 0). */
+    cv::Mat cropMapAndCenterOnCanvas(const cv::Mat& full_grid,
+                                     int sample_col_min, int sample_col_max,
+                                     int sample_row_min, int sample_row_max) const {
+        const int w = bridge_.gridWidth();
+        const int h = bridge_.gridHeight();
+        if (full_grid.empty() || full_grid.cols != w || full_grid.rows != h) return cv::Mat();
+        int sc_min = (sample_col_min >= 0) ? std::max(0, sample_col_min) : 0;
+        int sc_max = (sample_col_max >= 0) ? std::min(w - 1, sample_col_max) : w - 1;
+        int sr_min = (sample_row_min >= 0) ? std::max(0, sample_row_min) : 0;
+        int sr_max = (sample_row_max >= 0) ? std::min(h - 1, sample_row_max) : h - 1;
+        if (sc_min > sc_max || sr_min > sr_max) return cv::Mat();
+        const int crop_w = std::min(sc_max - sc_min + 1, MAP_FRAME_CANVAS_SIZE);
+        const int crop_h = std::min(sr_max - sr_min + 1, MAP_FRAME_CANVAS_SIZE);
+        cv::Mat crop = full_grid(cv::Rect(sc_min, sr_min, crop_w, crop_h)).clone();
+        cv::Mat canvas = cv::Mat::zeros(MAP_FRAME_CANVAS_SIZE, MAP_FRAME_CANVAS_SIZE, CV_8UC1);
+        const int cx = (MAP_FRAME_CANVAS_SIZE - crop_w) / 2;
+        const int cy = (MAP_FRAME_CANVAS_SIZE - crop_h) / 2;
+        crop.copyTo(canvas(cv::Rect(cx, cy, crop_w, crop_h)));
+        return canvas;
+    }
+
+    /** Overlay the crop region from a 1216x1216 canvas onto the full map at sample_* position. */
+    void overlayCanvasCropOntoMap(const cv::Mat& canvas_1216,
+                                  int sample_col_min, int sample_col_max,
+                                  int sample_row_min, int sample_row_max,
+                                  cv::Mat& map_out) const {
+        const int w = bridge_.gridWidth();
+        const int h = bridge_.gridHeight();
+        if (canvas_1216.empty() || canvas_1216.cols != MAP_FRAME_CANVAS_SIZE ||
+            canvas_1216.rows != MAP_FRAME_CANVAS_SIZE || map_out.empty() ||
+            map_out.cols != w || map_out.rows != h)
+            return;
+        int sc_min = (sample_col_min >= 0) ? std::max(0, sample_col_min) : 0;
+        int sc_max = (sample_col_max >= 0) ? std::min(w - 1, sample_col_max) : w - 1;
+        int sr_min = (sample_row_min >= 0) ? std::max(0, sample_row_min) : 0;
+        int sr_max = (sample_row_max >= 0) ? std::min(h - 1, sample_row_max) : h - 1;
+        if (sc_min > sc_max || sr_min > sr_max) return;
+        const int crop_w = std::min(sc_max - sc_min + 1, MAP_FRAME_CANVAS_SIZE);
+        const int crop_h = std::min(sr_max - sr_min + 1, MAP_FRAME_CANVAS_SIZE);
+        const int cx = (MAP_FRAME_CANVAS_SIZE - crop_w) / 2;
+        const int cy = (MAP_FRAME_CANVAS_SIZE - crop_h) / 2;
+        for (int r = 0; r < crop_h; ++r)
+            for (int c = 0; c < crop_w; ++c) {
+                uchar v = canvas_1216.at<uchar>(cy + r, cx + c);
+                if (v > 0) {
+                    int mr = sr_min + r;
+                    int mc = sc_min + c;
+                    if (mr >= 0 && mr < h && mc >= 0 && mc < w)
+                        map_out.at<uchar>(mr, mc) = 255;
+                }
+            }
+    }
+
+    /** Cookie-cutter: zero out the sample_* ROI on the map, then paste the crop from the
+     * 1216x1216 canvas into that hole. Planning then uses only the predictions in the ROI. */
+    void cookieCutterCanvasCropOntoMap(const cv::Mat& canvas_1216,
+                                      int sample_col_min, int sample_col_max,
+                                      int sample_row_min, int sample_row_max,
+                                      cv::Mat& map_out) const {
+        const int w = bridge_.gridWidth();
+        const int h = bridge_.gridHeight();
+        if (canvas_1216.empty() || canvas_1216.cols != MAP_FRAME_CANVAS_SIZE ||
+            canvas_1216.rows != MAP_FRAME_CANVAS_SIZE || map_out.empty() ||
+            map_out.cols != w || map_out.rows != h)
+            return;
+        int sc_min = (sample_col_min >= 0) ? std::max(0, sample_col_min) : 0;
+        int sc_max = (sample_col_max >= 0) ? std::min(w - 1, sample_col_max) : w - 1;
+        int sr_min = (sample_row_min >= 0) ? std::max(0, sample_row_min) : 0;
+        int sr_max = (sample_row_max >= 0) ? std::min(h - 1, sample_row_max) : h - 1;
+        if (sc_min > sc_max || sr_min > sr_max) return;
+        const int crop_w = std::min(sc_max - sc_min + 1, MAP_FRAME_CANVAS_SIZE);
+        const int crop_h = std::min(sr_max - sr_min + 1, MAP_FRAME_CANVAS_SIZE);
+        const int cx = (MAP_FRAME_CANVAS_SIZE - crop_w) / 2;
+        const int cy = (MAP_FRAME_CANVAS_SIZE - crop_h) / 2;
+        for (int r = sr_min; r <= sr_max; ++r)
+            for (int c = sc_min; c <= sc_max; ++c)
+                map_out.at<uchar>(r, c) = 0;
+        for (int r = 0; r < crop_h; ++r)
+            for (int c = 0; c < crop_w; ++c) {
+                int mr = sr_min + r;
+                int mc = sc_min + c;
+                if (mr >= 0 && mr < h && mc >= 0 && mc < w)
+                    map_out.at<uchar>(mr, mc) = canvas_1216.at<uchar>(cy + r, cx + c);
+            }
+    }
+
+    /** Build OccupancyGridArray from queue of cv::Mat grids (map frame).
+     * Each grid is expected to be MAP_FRAME_CANVAS_SIZE x MAP_FRAME_CANVAS_SIZE (1216x1216).
+     * Origin/resolution are set for canvas (0,0 and bridge resolution).
+     */
     path_planning::msg::OccupancyGridArray toOccupancyGridArrayMapFrame(
         const std::deque<cv::Mat>& queue) const {
         path_planning::msg::OccupancyGridArray arr;
         arr.header.frame_id = "map";
         arr.header.stamp = now();
+        const int canvas_sz = MAP_FRAME_CANVAS_SIZE;
+        const float res = static_cast<float>(bridge_.resolution());
         for (const cv::Mat& g : queue) {
-            if (g.empty()) continue;
+            if (g.empty() || g.cols != canvas_sz || g.rows != canvas_sz) continue;
             nav_msgs::msg::OccupancyGrid og;
             og.header = arr.header;
-            og.info.resolution = static_cast<float>(bridge_.resolution());
-            og.info.width = g.cols;
-            og.info.height = g.rows;
-            og.info.origin.position.x = bridge_.xMin();
-            og.info.origin.position.y = bridge_.yMin();
+            og.info.resolution = res;
+            og.info.width = canvas_sz;
+            og.info.height = canvas_sz;
+            og.info.origin.position.x = 0.0;
+            og.info.origin.position.y = 0.0;
             og.info.origin.position.z = 0.0;
             og.info.origin.orientation.w = 1.0;
-            og.data.resize(static_cast<size_t>(g.rows * g.cols));
-            for (int r = 0; r < g.rows; ++r)
-                for (int c = 0; c < g.cols; ++c)
-                    og.data[static_cast<size_t>(r * g.cols + c)] = g.at<uchar>(r, c) ? 100 : 0;
+            og.data.resize(static_cast<size_t>(canvas_sz * canvas_sz));
+            for (int r = 0; r < canvas_sz; ++r)
+                for (int c = 0; c < canvas_sz; ++c)
+                    og.data[static_cast<size_t>(r * canvas_sz + c)] = g.at<uchar>(r, c) ? 100 : 0;
             arr.grids.push_back(og);
         }
         return arr;
@@ -518,12 +613,20 @@ private:
         } else if (mode == "map_frame_model") {
             cv::Mat live_grid = bridge_.pointcloudToOccupancyGrid(live_pts, z_min, z_max);
             cv::Mat current_combined = bridge_.mergeWithStaticMap(live_grid);
+            int sample_col_min = get_parameter("sample_col_min").as_int();
+            int sample_col_max = get_parameter("sample_col_max").as_int();
+            int sample_row_min = get_parameter("sample_row_min").as_int();
+            int sample_row_max = get_parameter("sample_row_max").as_int();
             if (have_pose) {
-                std::lock_guard<std::mutex> lock(mutex_);
-                queue_map_frame_.push_back(current_combined);
-                while (queue_map_frame_.size() > 5u) queue_map_frame_.pop_front();
+                cv::Mat canvas = cropMapAndCenterOnCanvas(
+                    current_combined, sample_col_min, sample_col_max, sample_row_min, sample_row_max);
+                if (!canvas.empty()) {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    queue_map_frame_.push_back(canvas);
+                    while (queue_map_frame_.size() > 5u) queue_map_frame_.pop_front();
+                }
             }
-            if (pub_model_input_ && have_pose) {
+            if (pub_model_input_) {
                 std::deque<cv::Mat> q;
                 { std::lock_guard<std::mutex> lock(mutex_); q = queue_map_frame_; }
                 if (q.size() == 5u) {
@@ -540,10 +643,17 @@ private:
                     grids[i] = occupancyGridToMat(predicted_msg->grids[i]);
                 std::vector<double> w = boltmannWeights(static_cast<int>(n), T);
                 cv::Mat weighted = weightCombineGrids(grids, w);
-                if (!weighted.empty())
-                    combined = bridge_.mergeWithStaticMap(weighted);
-                else
+                if (!weighted.empty()) {
+                    int sc_min = get_parameter("sample_col_min").as_int();
+                    int sc_max = get_parameter("sample_col_max").as_int();
+                    int sr_min = get_parameter("sample_row_min").as_int();
+                    int sr_max = get_parameter("sample_row_max").as_int();
+                    combined = bridge_.mergeWithStaticMap(
+                        cv::Mat::zeros(bridge_.gridHeight(), bridge_.gridWidth(), CV_8UC1));
+                    cookieCutterCanvasCropOntoMap(weighted, sc_min, sc_max, sr_min, sr_max, combined);
+                } else {
                     combined = current_combined;
+                }
             } else {
                 combined = current_combined;
             }
