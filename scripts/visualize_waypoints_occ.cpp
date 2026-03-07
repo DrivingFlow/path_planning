@@ -180,7 +180,12 @@ private:
                 int8_t val = occ.data[idx];
                 if (val < 0) {
                     img.at<uchar>(r, c) = 127;
+                } else if (val <= 1) {
+                    // Handle model output in 0-1 range (agent_centered_model)
+                    // val == 0 -> free space (255), val == 1 -> occupied (0)
+                    img.at<uchar>(r, c) = (val == 0) ? 255 : 0;
                 } else {
+                    // Standard occupancy grid format (0-100 scale)
                     int v = 100 - val;
                     v = std::max(0, std::min(100, v));
                     img.at<uchar>(r, c) = static_cast<uchar>(v * 255 / 100);
@@ -200,8 +205,18 @@ private:
                 for (int c = 0; c < occ.width; ++c) {
                     int idx = r * occ.width + c;
                     int8_t val = occ.data[idx];
-                    // OccupancyGrid: 0 = free, >0 (e.g., 100 or -1) treated as obstacle.
-                    bool free_cell = (val == 0);
+                    bool free_cell;
+                    if (val < 0) {
+                        // Unknown/default cells treated as obstacles
+                        free_cell = false;
+                    } else if (val <= 1) {
+                        // Handle model output in 0-1 range (agent_centered_model)
+                        // val == 0 -> free, val == 1 -> occupied
+                        free_cell = (val == 0);
+                    } else {
+                        // Standard occupancy grid: 0 = free, >0 = obstacle
+                        free_cell = (val == 0);
+                    }
                     binary_inv.at<uchar>(r, c) = free_cell ? 255 : 0;
                 }
             }
@@ -361,9 +376,11 @@ private:
         }
 
         // Build single combined view: occupancy on the left, energy map and/or agent-centered ROI as needed
-        cv::Mat combined = view_occ;
+        cv::Mat combined = view_occ.clone();
         if (show_energy_map_ && !view_energy.empty()) {
-            cv::hconcat(combined, view_energy, combined);
+            cv::Mat temp;
+            cv::hconcat(combined, view_energy, temp);
+            combined = temp;
         }
 
         if (show_agent_centered_roi_ && robot.has_value()) {
@@ -439,7 +456,9 @@ private:
                               cv::Scalar(255, 255, 255), cv::FILLED);
                 cv::putText(view_agent, "Agent 5m", cv::Point(5, 5 + text_size.height),
                             cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 0, 0), 1);
-                cv::hconcat(combined, view_agent, combined);
+                cv::Mat temp;
+                cv::hconcat(combined, view_agent, temp);
+                combined = temp;
             }
         }
 

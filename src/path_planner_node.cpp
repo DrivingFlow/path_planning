@@ -644,6 +644,25 @@ private:
                 }
             }
             if (predicted_msg && !predicted_msg->grids.empty()) {
+                // Log raw values from model output for debugging
+                if (!predicted_msg->grids.empty() && !predicted_msg->grids[0].data.empty()) {
+                    std::set<int8_t> unique_vals;
+                    int8_t min_val = 127, max_val = -128;
+                    for (const auto& val : predicted_msg->grids[0].data) {
+                        unique_vals.insert(val);
+                        min_val = std::min(min_val, val);
+                        max_val = std::max(max_val, val);
+                    }
+                    std::string unique_str = "{";
+                    for (auto v : unique_vals) {
+                        if (unique_str.size() > 1) unique_str += ", ";
+                        unique_str += std::to_string(static_cast<int>(v));
+                    }
+                    unique_str += "}";
+                    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
+                        "Model output (map_frame) - Range: [%d, %d], Unique values: %s",
+                        static_cast<int>(min_val), static_cast<int>(max_val), unique_str.c_str());
+                }
                 int N = get_parameter("num_predicted_frames").as_int();
                 double T = get_parameter("prediction_temperature").as_double();
                 size_t n = std::min(static_cast<size_t>(N), predicted_msg->grids.size());
@@ -692,6 +711,25 @@ private:
                 }
             }
             if (predicted_msg && !predicted_msg->grids.empty()) {
+                // Log raw values from model output for debugging
+                if (!predicted_msg->grids.empty() && !predicted_msg->grids[0].data.empty()) {
+                    std::set<int8_t> unique_vals;
+                    int8_t min_val = 127, max_val = -128;
+                    for (const auto& val : predicted_msg->grids[0].data) {
+                        unique_vals.insert(val);
+                        min_val = std::min(min_val, val);
+                        max_val = std::max(max_val, val);
+                    }
+                    std::string unique_str = "{";
+                    for (auto v : unique_vals) {
+                        if (unique_str.size() > 1) unique_str += ", ";
+                        unique_str += std::to_string(static_cast<int>(v));
+                    }
+                    unique_str += "}";
+                    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
+                        "Model output (agent_centered) - Range: [%d, %d], Unique values: %s",
+                        static_cast<int>(min_val), static_cast<int>(max_val), unique_str.c_str());
+                }
                 int N = get_parameter("num_predicted_frames").as_int();
                 double T = get_parameter("prediction_temperature").as_double();
                 size_t n = std::min(static_cast<size_t>(N), predicted_msg->grids.size());
