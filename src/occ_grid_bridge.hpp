@@ -92,6 +92,13 @@ public:
                                cv::Mat& map_out) const;
 
     /**
+     * Render the static (vanilla) map into a 201×201 ego-centered grid at (robot_x, robot_y, robot_yaw).
+     * Same coordinate convention as pointcloudToEgoOccupancyGrid201. Use with cv::max(ego_live, ego_static)
+     * to give the model both live scans and static map context in the circular cutout.
+     */
+    cv::Mat staticMapToEgoGrid201(double robot_x, double robot_y, double robot_yaw) const;
+
+    /**
      * Convert path in grid indices (col, row) to world coordinates (x, y) in map frame.
      */
     std::vector<std::array<double, 2>> pathIndicesToWorld(

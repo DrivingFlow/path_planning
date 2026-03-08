@@ -797,6 +797,9 @@ private:
             if (have_pose) {
                 cv::Mat ego_grid = OccGridBridge::pointcloudToEgoOccupancyGrid201(
                     live_pts, start_x, start_y, start_yaw, z_min, z_max);
+                cv::Mat ego_static = bridge_.staticMapToEgoGrid201(start_x, start_y, start_yaw);
+                if (!ego_static.empty())
+                    cv::max(ego_grid, ego_static, ego_grid);
                 EgoFrame frame;
                 frame.grid = ego_grid;
                 frame.x = start_x;

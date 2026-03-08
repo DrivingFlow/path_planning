@@ -224,6 +224,34 @@ void OccGridBridge::zeroEgoFootprintInMap(double anchor_x, double anchor_y, doub
     }
 }
 
+cv::Mat OccGridBridge::staticMapToEgoGrid201(double robot_x, double robot_y, double robot_yaw) const {
+    if (static_map_.empty() || static_map_.rows != h_ || static_map_.cols != w_)
+        return cv::Mat::zeros(EGO_GRID_SIZE, EGO_GRID_SIZE, CV_8UC1);
+    const int sz = EGO_GRID_SIZE;
+    const double res_ego = egoGridResolution();
+    const double ox_ego = egoGridOriginX();
+    const double oy_ego = egoGridOriginY();
+    const double cy = std::cos(robot_yaw);
+    const double sy = std::sin(robot_yaw);
+    const double r2_max = EGO_RADIUS_M * EGO_RADIUS_M;
+
+    cv::Mat grid = cv::Mat::zeros(sz, sz, CV_8UC1);
+    for (int r = 0; r < sz; ++r) {
+        for (int c = 0; c < sz; ++c) {
+            double ego_x = ox_ego + c * res_ego;
+            double ego_y = oy_ego - r * res_ego;
+            if (ego_x * ego_x + ego_y * ego_y > r2_max) continue;
+            double map_x = robot_x + cy * ego_x - sy * ego_y;
+            double map_y = robot_y + sy * ego_x + cy * ego_y;
+            int col, row;
+            worldToGrid(map_x, map_y, col, row);
+            if (col >= 0 && col < w_ && row >= 0 && row < h_)
+                grid.at<uchar>(r, c) = static_map_.at<uchar>(row, col);
+        }
+    }
+    return grid;
+}
+
 std::vector<std::array<double, 2>> OccGridBridge::pathIndicesToWorld(
     const std::vector<cv::Point2i>& path_indices) const {
     std::vector<std::array<double, 2>> out;
