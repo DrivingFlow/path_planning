@@ -758,7 +758,7 @@ private:
                     while (queue_map_frame_.size() > 5u) queue_map_frame_.pop_front();
                 }
             }
-                if (pub_model_input_ && queue_map_frame_.size() == 5u) {
+            if (pub_model_input_ && queue_map_frame_.size() == 5u) {
                 std::deque<cv::Mat> q;
                 { std::lock_guard<std::mutex> lock(mutex_); q = queue_map_frame_; }
                 if (q.size() == 5u) {
@@ -766,27 +766,12 @@ private:
                     pub_model_input_->publish(msg);
                 }
             }
+            combined = bridge_.mergeWithStaticMap(cv::Mat::zeros(bridge_.gridHeight(), bridge_.gridWidth(), CV_8UC1));
+            int sc_min = get_parameter("sample_col_min").as_int();
+            int sc_max = get_parameter("sample_col_max").as_int();
+            int sr_min = get_parameter("sample_row_min").as_int();
+            int sr_max = get_parameter("sample_row_max").as_int();
             if (predicted_msg && !predicted_msg->grids.empty()) {
-                // Log raw values from model output for debugging
-                if (!predicted_msg->grids.empty() && !predicted_msg->grids[0].data.empty()) {
-                    std::set<int8_t> unique_vals;
-                    int8_t min_val = 127, max_val = -128;
-                    for (const auto& val : predicted_msg->grids[0].data) {
-                        unique_vals.insert(val);
-                        min_val = std::min(min_val, val);
-                        max_val = std::max(max_val, val);
-                    }
-                    std::string unique_str = "{";
-                    for (auto v : unique_vals) {
-                        if (unique_str.size() > 1) unique_str += ", ";
-                        unique_str += std::to_string(static_cast<int>(v));
-                    }
-                    unique_str += "}";
-                    double thresh = get_parameter("model_occupancy_threshold").as_double();
-                    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
-                        "Model output (map_frame) - Range: [%d, %d], Unique values: %s, Threshold: %.2f",
-                        static_cast<int>(min_val), static_cast<int>(max_val), unique_str.c_str(), thresh);
-                }
                 int N = get_parameter("num_predicted_frames").as_int();
                 double T = get_parameter("prediction_temperature").as_double();
                 size_t n = std::min(static_cast<size_t>(N), predicted_msg->grids.size());
@@ -795,19 +780,15 @@ private:
                     grids[i] = occupancyGridToMat(predicted_msg->grids[i]);
                 std::vector<double> w = boltmannWeights(static_cast<int>(n), T);
                 cv::Mat weighted = weightCombineGrids(grids, w);
-                if (!weighted.empty()) {
-                    int sc_min = get_parameter("sample_col_min").as_int();
-                    int sc_max = get_parameter("sample_col_max").as_int();
-                    int sr_min = get_parameter("sample_row_min").as_int();
-                    int sr_max = get_parameter("sample_row_max").as_int();
-                    combined = bridge_.mergeWithStaticMap(
-                        cv::Mat::zeros(bridge_.gridHeight(), bridge_.gridWidth(), CV_8UC1));
+                if (!weighted.empty())
                     cookieCutterCanvasCropOntoMap(weighted, sc_min, sc_max, sr_min, sr_max, combined);
-                } else {
-                    combined = current_combined;
+                else {
+                    cv::Mat zero_canvas = cv::Mat::zeros(MAP_FRAME_CANVAS_SIZE, MAP_FRAME_CANVAS_SIZE, CV_8UC1);
+                    cookieCutterCanvasCropOntoMap(zero_canvas, sc_min, sc_max, sr_min, sr_max, combined);
                 }
             } else {
-                combined = current_combined;
+                cv::Mat zero_canvas = cv::Mat::zeros(MAP_FRAME_CANVAS_SIZE, MAP_FRAME_CANVAS_SIZE, CV_8UC1);
+                cookieCutterCanvasCropOntoMap(zero_canvas, sc_min, sc_max, sr_min, sr_max, combined);
             }
         } else if (mode == "agent_centered_model") {
             if (have_pose) {
@@ -834,41 +815,12 @@ private:
                     pub_model_input_->publish(msg);
                 }
             }
-            if (predicted_msg && !predicted_msg->grids.empty()) {
-                // Log raw values from model output for debugging
-                if (!predicted_msg->grids.empty() && !predicted_msg->grids[0].data.empty()) {
-                    std::set<int8_t> unique_vals;
-                    int8_t min_val = 127, max_val = -128;
-                    for (const auto& val : predicted_msg->grids[0].data) {
-                        unique_vals.insert(val);
-                        min_val = std::min(min_val, val);
-                        max_val = std::max(max_val, val);
-                    }
-                    std::string unique_str = "{";
-                    for (auto v : unique_vals) {
-                        if (unique_str.size() > 1) unique_str += ", ";
-                        unique_str += std::to_string(static_cast<int>(v));
-                    }
-                    unique_str += "}";
-                    double thresh = get_parameter("model_occupancy_threshold").as_double();
-                    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
-                        "Model output (agent_centered) - Range: [%d, %d], Unique values: %s, Threshold: %.2f",
-                        static_cast<int>(min_val), static_cast<int>(max_val), unique_str.c_str(), thresh);
-                }
-                int N = get_parameter("num_predicted_frames").as_int();
-                double T = get_parameter("prediction_temperature").as_double();
-                size_t n = std::min(static_cast<size_t>(N), predicted_msg->grids.size());
-                std::vector<cv::Mat> grids(n);
-                for (size_t i = 0; i < n; ++i)
-                    grids[i] = occupancyGridToMat(predicted_msg->grids[i]);
-                std::vector<double> w = boltmannWeights(static_cast<int>(n), T);
-                cv::Mat weighted_ego = weightCombineGrids(grids, w);
-                if (!weighted_ego.empty()) {
-                    double ax, ay, ayaw;
-                    { std::lock_guard<std::mutex> lock(mutex_); ax = anchor_x_; ay = anchor_y_; ayaw = anchor_yaw_; }
-                    combined = bridge_.mergeWithStaticMap(cv::Mat::zeros(bridge_.gridHeight(), bridge_.gridWidth(), CV_8UC1));
-                    bridge_.zeroEgoFootprintInMap(ax, ay, ayaw, combined);
-                    bridge_.pasteEgoGridIntoMap(weighted_ego, ax, ay, ayaw, combined);
+            combined = bridge_.mergeWithStaticMap(cv::Mat::zeros(bridge_.gridHeight(), bridge_.gridWidth(), CV_8UC1));
+            if (have_pose) {
+                double ax, ay, ayaw;
+                { std::lock_guard<std::mutex> lock(mutex_); ax = anchor_x_; ay = anchor_y_; ayaw = anchor_yaw_; }
+                bridge_.zeroEgoFootprintInMap(ax, ay, ayaw, combined);
+            }
             if (predicted_agent_msg) {
                 std::vector<cv::Mat> grids = agentCenteredInputToMats(*predicted_agent_msg);
                 if (!grids.empty()) {
@@ -880,17 +832,9 @@ private:
                     if (!weighted_ego.empty()) {
                         double ax, ay, ayaw;
                         { std::lock_guard<std::mutex> lock(mutex_); ax = anchor_x_; ay = anchor_y_; ayaw = anchor_yaw_; }
-                        combined = bridge_.mergeWithStaticMap(cv::Mat::zeros(bridge_.gridHeight(), bridge_.gridWidth(), CV_8UC1));
-                        bridge_.zeroEgoFootprintInMap(ax, ay, ayaw, combined);
                         bridge_.pasteEgoGridIntoMap(weighted_ego, ax, ay, ayaw, combined);
-                    } else {
-                        combined = bridge_.mergeWithStaticMap(cv::Mat::zeros(bridge_.gridHeight(), bridge_.gridWidth(), CV_8UC1));
                     }
-                } else {
-                    combined = bridge_.mergeWithStaticMap(cv::Mat::zeros(bridge_.gridHeight(), bridge_.gridWidth(), CV_8UC1));
                 }
-            } else {
-                combined = bridge_.mergeWithStaticMap(cv::Mat::zeros(bridge_.gridHeight(), bridge_.gridWidth(), CV_8UC1));
             }
         } else {
             cv::Mat live_grid = bridge_.pointcloudToOccupancyGrid(live_pts, z_min, z_max);
