@@ -1,6 +1,0 @@
-free_thresh: 0.3
-image: plab_4_rotated.png
-negate: 0
-occupied_thresh: 0.6
-origin: [-31.50260703410904, -28.209886187787287, 0.0]
-resolution: 0.05

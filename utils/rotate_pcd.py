@@ -34,26 +34,42 @@ def level_plane(points):
 
 if __name__ == "__main__":
     # -----------------------------
-    # Inputs (edit these as needed)
+    # Inputs: set yaml_config_path to load ground_points/z_range from a YAML; else edit inline below.
     # -----------------------------
-    pcd_path = r"C:\Users\ianrp\Desktop\Assignments\Fifth\ENPH 479\path_planning\utils\plab_4-1.pcd"
+    yaml_config_path = None  # e.g. r"path/to/plab_4-2_rotated.yaml" to reuse stored config
+
+    pcd_path = r"C:\Users\ianrp\Desktop\Assignments\Fifth\ENPH 479\path_planning\utils\plab_03_07.pcd"
     out_path = r"C:\Users\ianrp\Desktop\Assignments\Fifth\ENPH 479\path_planning\utils"
 
-    # Match defaults in `src/path_planner_node.cpp`
-    z_range = [0.1, 2.0]
+    z_range = [0.05, 0.6]
     res = 0.05
 
-    # -----------------------------
-    # Ground points (provided)
-    # -----------------------------
     ground_points = [
-        [-1.023752, -4.870776, -0.370789],
-        [-7.000184, -3.710128, -0.528541],
-        [-5.459779, 14.280241, -0.942438],
-        [2.564512, 7.997607, -0.598214],
-        [-4.150812, 0.827941, -0.548578],
-        [-3.162940, 5.527684, -0.570391],
+        [-1.848856,16.851414,-0.322981],
+        [6.075920,14.740389,-0.514475],
+        [-2.958323,11.328078,-0.328834],
+        [3.371691,7.290042,-0.509223],
+        [-6.006183,3.150262,-0.318441],
+        [0.561534,0.605124,-0.470050],
+        [-8.175881,-1.045356,-0.289522],
+        [-0.870123,-5.268344,-0.462429]
     ]
+
+    if yaml_config_path and os.path.isfile(yaml_config_path):
+        with open(yaml_config_path, "r") as f:
+            cfg = yaml.safe_load(f)
+        if cfg:
+            if "z_range" in cfg:
+                z_range = list(cfg["z_range"])
+            if "ground_points" in cfg:
+                ground_points = [list(p) for p in cfg["ground_points"]]
+            if "pcd_path" in cfg:
+                pcd_path = cfg["pcd_path"]
+            if "out_path" in cfg:
+                out_path = cfg["out_path"]
+            if "resolution" in cfg:
+                res = float(cfg["resolution"])
+        print(f"Loaded config from {yaml_config_path}: z_range={z_range}, {len(ground_points)} ground points")
 
     os.makedirs(out_path, exist_ok=True)
 
@@ -123,8 +139,10 @@ if __name__ == "__main__":
         "resolution": res,
         "origin": [float(x_min), float(y_min), 0.0],
         "occupied_thresh": 0.6,
-        "free_thresh": 0.3,
+        "free_thresh": 0,
         "negate": 0,
+        "z_range": z_range,
+        "ground_points": ground_points,
     }
 
     with open(yaml_path, "w") as f:
