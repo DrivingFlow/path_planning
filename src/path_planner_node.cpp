@@ -797,9 +797,6 @@ private:
             if (have_pose) {
                 cv::Mat ego_grid = OccGridBridge::pointcloudToEgoOccupancyGrid201(
                     live_pts, start_x, start_y, start_yaw, z_min, z_max);
-                cv::Mat ego_static = bridge_.staticMapToEgoGrid201(start_x, start_y, start_yaw);
-                if (!ego_static.empty())
-                    cv::max(ego_grid, ego_static, ego_grid);
                 EgoFrame frame;
                 frame.grid = ego_grid;
                 frame.x = start_x;
@@ -828,11 +825,7 @@ private:
                 }
             }
             combined = bridge_.mergeWithStaticMap(cv::Mat::zeros(bridge_.gridHeight(), bridge_.gridWidth(), CV_8UC1));
-            if (have_pose) {
-                double ax, ay, ayaw;
-                { std::lock_guard<std::mutex> lock(mutex_); ax = anchor_x_; ay = anchor_y_; ayaw = anchor_yaw_; }
-                bridge_.zeroEgoFootprintInMap(ax, ay, ayaw, combined);
-            }
+            // Vanilla map is left untouched; only model predictions (from live scans) are overlaid on top.
             if (predicted_agent_msg) {
                 std::vector<cv::Mat> grids = agentCenteredInputToMats(*predicted_agent_msg);
                 if (!grids.empty()) {
