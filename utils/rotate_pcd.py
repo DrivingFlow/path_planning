@@ -35,24 +35,25 @@ def level_plane(points):
 if __name__ == "__main__":
     # -----------------------------
     # Inputs: set yaml_config_path to load ground_points/z_range from a YAML; else edit inline below.
+    # pcd_path: path to input point cloud; use .pcd or .ply extension (format is inferred from it).
     # -----------------------------
     yaml_config_path = None  # e.g. r"path/to/plab_4-2_rotated.yaml" to reuse stored config
 
-    pcd_path = r"C:\Users\ianrp\Desktop\Assignments\Fifth\ENPH 479\path_planning\utils\plab_03_07.pcd"
+    pcd_path = r"C:\Users\ianrp\Desktop\Assignments\Fifth\ENPH 479\path_planning\utils\plab_03_07_3.ply"
     out_path = r"C:\Users\ianrp\Desktop\Assignments\Fifth\ENPH 479\path_planning\utils"
 
-    z_range = [0.05, 0.6]
+    z_range = [0.05, 1]
     res = 0.05
 
     ground_points = [
-        [-1.848856,16.851414,-0.322981],
-        [6.075920,14.740389,-0.514475],
-        [-2.958323,11.328078,-0.328834],
-        [3.371691,7.290042,-0.509223],
-        [-6.006183,3.150262,-0.318441],
-        [0.561534,0.605124,-0.470050],
-        [-8.175881,-1.045356,-0.289522],
-        [-0.870123,-5.268344,-0.462429]
+        [-7.569505,13.645481,-0.423353],
+        [-13.042581,10.550480,-0.471645],
+        [-3.540575,8.516549,-0.445796],
+        [-10.350218,4.351845,-0.510463],
+        [-0.081621,3.421459,-0.473557],
+        [-6.057440,-2.392545,-0.547624],
+        [2.441370,-3.620720,-0.520534],
+        [-1.659044,-6.697102,-0.476078]
     ]
 
     if yaml_config_path and os.path.isfile(yaml_config_path):
@@ -74,8 +75,13 @@ if __name__ == "__main__":
     os.makedirs(out_path, exist_ok=True)
 
     # -----------------------------
-    # Load full PCD
+    # Load point cloud (PCD or PLY; format from file extension)
     # -----------------------------
+    cloud_ext = os.path.splitext(pcd_path)[1].lower()
+    if cloud_ext not in (".pcd", ".ply"):
+        raise ValueError(
+            f"Point cloud path must have extension .pcd or .ply, got: {pcd_path}"
+        )
     pcd_o3d = o3d.io.read_point_cloud(pcd_path)
     pts = np.asarray(pcd_o3d.points)
     if pts.size == 0:
@@ -90,11 +96,11 @@ if __name__ == "__main__":
     pts_leveled = (R @ (pts + t).T).T
 
     # -----------------------------
-    # Save rotated PCD: <name>_rotated.pcd
+    # Save rotated point cloud: <name>_rotated.pcd (always PCD output)
     # -----------------------------
     stem = os.path.splitext(os.path.basename(pcd_path))[0]
     rotated_name = f"{stem}_rotated"
-    rotated_pcd_path = os.path.join(out_path, f"{rotated_name}.pcd")
+    rotated_cloud_path = os.path.join(out_path, f"{rotated_name}.pcd")
 
     pcd_rot = o3d.geometry.PointCloud()
     pcd_rot.points = o3d.utility.Vector3dVector(pts_leveled)
@@ -104,8 +110,8 @@ if __name__ == "__main__":
         normals = np.asarray(pcd_o3d.normals)
         pcd_rot.normals = o3d.utility.Vector3dVector((R @ normals.T).T)
 
-    o3d.io.write_point_cloud(rotated_pcd_path, pcd_rot)
-    print(f"Saved rotated point cloud: {rotated_pcd_path}")
+    o3d.io.write_point_cloud(rotated_cloud_path, pcd_rot)
+    print(f"Saved rotated point cloud: {rotated_cloud_path}")
 
     # -----------------------------
     # Create occupancy map PNG + YAML from rotated points
