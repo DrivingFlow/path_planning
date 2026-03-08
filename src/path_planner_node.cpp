@@ -94,7 +94,9 @@ public:
         declare_parameter<double>("prediction_temperature", 1.0);
         // Number of predicted frames we expect from map updater (model modes only)
         declare_parameter<int>("num_predicted_frames", 5);
-        // Topic to publish model input (both map_frame and agent_centered use AgentCenteredInput)
+        // Threshold for binarizing analog model output values (0-1 range) before scaling to 0-255
+        declare_parameter<double>("model_occupancy_threshold", 0.5);
+        // Topic to publish 5 input grids to map updater (model modes only)
         declare_parameter<std::string>("model_occ_input_topic", "/map_updater/occ_grid_input");
         // Topic to subscribe for predicted grids from map updater (model modes only)
         declare_parameter<std::string>("model_predicted_output_topic", "/map_updater/predicted_grid_output");
@@ -253,21 +255,31 @@ private:
     }
 
     /** Convert nav_msgs::OccupancyGrid to cv::Mat (0=free, 255=obstacle). */
-    static cv::Mat occupancyGridToMat(const nav_msgs::msg::OccupancyGrid& msg) {
+    cv::Mat occupancyGridToMat(const nav_msgs::msg::OccupancyGrid& msg) {
         int w = static_cast<int>(msg.info.width);
         int h = static_cast<int>(msg.info.height);
         if (w <= 0 || h <= 0 || msg.data.size() != static_cast<size_t>(w * h)) return cv::Mat();
         cv::Mat m(h, w, CV_8UC1);
+        double threshold = get_parameter("model_occupancy_threshold").as_double();
         for (int i = 0; i < h * w; ++i) {
             int8_t v = msg.data[i];
-            // Handle both standard occupancy values (0-100) and model output (0-1 range stored as 0 or 1)
-            // If v is 0 or 1, assume it's from a model that outputs 0-1 range and scale to 0-255
-            if (v == 1) {
-                m.at<uchar>(i / w, i % w) = 255;
-            } else if (v > 1) {
-                // Standard occupancy grid format: treat any value > 0 as obstacle
+            // Handle model output (0-99 range) and standard occupancy values
+            if (v >= 0 && v < 100) {
+                // Model output in 0-99 range: scale to 0-255
+                // Apply threshold (0-99 scale) to determine occupancy
+                double threshold_99 = threshold * 99.0;  // Scale threshold to 0-99 range
+                if (v >= threshold_99) {
+                    // Above threshold: scale occupancy value to 0-255 (0=free, 255=full obstacle)
+                    m.at<uchar>(i / w, i % w) = static_cast<uchar>((v * 255) / 99);
+                } else {
+                    // Below threshold: treat as free space
+                    m.at<uchar>(i / w, i % w) = 0;
+                }
+            } else if (v == 100) {
+                // Standard occupancy grid 100 = full obstacle
                 m.at<uchar>(i / w, i % w) = 255;
             } else {
+                // Negative values (unknown) treated as free
                 m.at<uchar>(i / w, i % w) = 0;
             }
         }
@@ -741,9 +753,10 @@ private:
                         unique_str += std::to_string(static_cast<int>(v));
                     }
                     unique_str += "}";
+                    double thresh = get_parameter("model_occupancy_threshold").as_double();
                     RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
-                        "Model output (map_frame) - Range: [%d, %d], Unique values: %s",
-                        static_cast<int>(min_val), static_cast<int>(max_val), unique_str.c_str());
+                        "Model output (map_frame) - Range: [%d, %d], Unique values: %s, Threshold: %.2f",
+                        static_cast<int>(min_val), static_cast<int>(max_val), unique_str.c_str(), thresh);
                 }
                 int N = get_parameter("num_predicted_frames").as_int();
                 double T = get_parameter("prediction_temperature").as_double();
@@ -808,9 +821,10 @@ private:
                         unique_str += std::to_string(static_cast<int>(v));
                     }
                     unique_str += "}";
+                    double thresh = get_parameter("model_occupancy_threshold").as_double();
                     RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
-                        "Model output (agent_centered) - Range: [%d, %d], Unique values: %s",
-                        static_cast<int>(min_val), static_cast<int>(max_val), unique_str.c_str());
+                        "Model output (agent_centered) - Range: [%d, %d], Unique values: %s, Threshold: %.2f",
+                        static_cast<int>(min_val), static_cast<int>(max_val), unique_str.c_str(), thresh);
                 }
                 int N = get_parameter("num_predicted_frames").as_int();
                 double T = get_parameter("prediction_temperature").as_double();

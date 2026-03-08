@@ -46,6 +46,7 @@ def generate_launch_description():
     occ_data_mode = LaunchConfiguration("occ_data_mode", default="live")
     prediction_temperature = LaunchConfiguration("prediction_temperature", default="3.0")
     num_predicted_frames = LaunchConfiguration("num_predicted_frames", default="5")
+    model_occupancy_threshold = LaunchConfiguration("model_occupancy_threshold", default="0.5")
     model_occ_input_topic = LaunchConfiguration("model_occ_input_topic", default="/map_updater/occ_grid_input")
     model_predicted_output_topic = LaunchConfiguration("model_predicted_output_topic", default="/map_updater/predicted_grid_output")
 
@@ -96,21 +97,21 @@ def generate_launch_description():
             # Whether to show agent-centered 5 m radius ROI panel in C++ visualizer (independent of energy map)
             DeclareLaunchArgument("show_agent_centered_roi", default_value="False"),
             # Minimum column for visualization view; -1 = full grid width
-            DeclareLaunchArgument("view_col_min", default_value="375"),
+            DeclareLaunchArgument("view_col_min", default_value="420"),
             # Maximum column for visualization view; -1 = full grid width
-            DeclareLaunchArgument("view_col_max", default_value="800"),
+            DeclareLaunchArgument("view_col_max", default_value="920"),
             # Minimum row for visualization view; -1 = full grid height
-            DeclareLaunchArgument("view_row_min", default_value="75"),
+            DeclareLaunchArgument("view_row_min", default_value="60"),
             # Maximum row for visualization view; -1 = full grid height
-            DeclareLaunchArgument("view_row_max", default_value="730"),
+            DeclareLaunchArgument("view_row_max", default_value="610"),
             # RRT sampling min col (grid index); -1 = full grid
-            DeclareLaunchArgument("sample_col_min", default_value="375"),
+            DeclareLaunchArgument("sample_col_min", default_value="420"),
             # RRT sampling max col (grid index); -1 = full grid
-            DeclareLaunchArgument("sample_col_max", default_value="800"),
+            DeclareLaunchArgument("sample_col_max", default_value="920"),
             # RRT sampling min row (grid index); -1 = full grid
-            DeclareLaunchArgument("sample_row_min", default_value="75"),
+            DeclareLaunchArgument("sample_row_min", default_value="60"),
             # RRT sampling max row (grid index); -1 = full grid
-            DeclareLaunchArgument("sample_row_max", default_value="730"),
+            DeclareLaunchArgument("sample_row_max", default_value="610"),
             # If True, /goal_pose x,y are grid col,row; else world (m)
             DeclareLaunchArgument("goal_in_pixels", default_value="False"),
             # Path planner: 'rrt' or 'astar' (A* with clearance energy)
@@ -119,8 +120,10 @@ def generate_launch_description():
             DeclareLaunchArgument("planner_settings", default_value="0.1,0.2,0.2,30"),
             # Occupancy data source: 'live' | 'map_frame_model' | 'agent_centered_model'
             DeclareLaunchArgument("occ_data_mode", default_value="agent_centered_model"),
-            DeclareLaunchArgument("prediction_temperature", default_value="1.0"),
+            DeclareLaunchArgument("prediction_temperature", default_value="10000.0"),
             DeclareLaunchArgument("num_predicted_frames", default_value="5"),
+            # Threshold for binarizing analog model output values (0-1 range) before scaling to 0-255
+            DeclareLaunchArgument("model_occupancy_threshold", default_value="0.3"),
             DeclareLaunchArgument("model_occ_input_topic", default_value="/map_updater/occ_grid_input"),
             DeclareLaunchArgument("model_predicted_output_topic", default_value="/map_updater/predicted_grid_output"),
             Node(
@@ -151,6 +154,7 @@ def generate_launch_description():
                         "occ_data_mode": occ_data_mode,
                         "prediction_temperature": prediction_temperature,
                         "num_predicted_frames": num_predicted_frames,
+                        "model_occupancy_threshold": model_occupancy_threshold,
                         "model_occ_input_topic": model_occ_input_topic,
                         "model_predicted_output_topic": model_predicted_output_topic,
                     }
