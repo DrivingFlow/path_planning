@@ -83,8 +83,10 @@ public:
                              cv::Mat& map_out) const;
 
     /**
-     * Zero out the map region covered by the ego footprint (same transform as pasteEgoGridIntoMap).
-     * Used for cookie-cutter: call before pasteEgoGridIntoMap so planning uses only predictions in the agent subspace.
+     * Zero out the map region covered by the ego footprint (circle of radius EGO_RADIUS_M
+     * centred on anchor_x, anchor_y).  Rotation-independent: iterates over map pixels in
+     * the bounding box and zeroes every cell whose world position is within the radius,
+     * guaranteeing no map cell inside the circle is missed due to sub-pixel rotation gaps.
      */
     void zeroEgoFootprintInMap(double anchor_x, double anchor_y, double anchor_yaw,
                                cv::Mat& map_out) const;

@@ -192,28 +192,34 @@ void OccGridBridge::pasteEgoGridIntoMap(const cv::Mat& ego_grid,
     }
 }
 
-void OccGridBridge::zeroEgoFootprintInMap(double anchor_x, double anchor_y, double anchor_yaw,
+void OccGridBridge::zeroEgoFootprintInMap(double anchor_x, double anchor_y, double /*anchor_yaw*/,
                                           cv::Mat& map_out) const {
     if (map_out.empty() || map_out.cols != w_ || map_out.rows != h_)
         return;
-    const double res_ego = egoGridResolution();
-    const double ox_ego = egoGridOriginX();
-    const double oy_ego = egoGridOriginY();
-    const double cy = std::cos(anchor_yaw);
-    const double sy = std::sin(anchor_yaw);
 
+    // Iterate over every map pixel whose world position falls within EGO_RADIUS_M of the anchor.
+    // This is rotation-independent and guarantees no map cell inside the circle is missed
+    // (the old approach of iterating over ego-grid pixels left sub-pixel gaps after rotation).
     const double r2_max = EGO_RADIUS_M * EGO_RADIUS_M;
-    for (int r = 0; r < EGO_GRID_SIZE; ++r) {
-        for (int c = 0; c < EGO_GRID_SIZE; ++c) {
-            double ego_x = ox_ego + c * res_ego;
-            double ego_y = oy_ego - r * res_ego;
-            if (ego_x * ego_x + ego_y * ego_y > r2_max) continue;  // circular mask
-            double map_x = anchor_x + cy * ego_x - sy * ego_y;
-            double map_y = anchor_y + sy * ego_x + cy * ego_y;
-            int col, row;
-            worldToGrid(map_x, map_y, col, row);
-            if (col >= 0 && col < w_ && row >= 0 && row < h_)
-                map_out.at<uchar>(row, col) = 0;
+
+    // Compute the map-pixel bounding box of the circle to avoid scanning the whole map.
+    int anchor_col, anchor_row;
+    worldToGrid(anchor_x, anchor_y, anchor_col, anchor_row);
+    int radius_px = static_cast<int>(std::ceil(EGO_RADIUS_M / res_)) + 1;
+
+    int r_min = std::max(0,     anchor_row - radius_px);
+    int r_max = std::min(h_ - 1, anchor_row + radius_px);
+    int c_min = std::max(0,     anchor_col - radius_px);
+    int c_max = std::min(w_ - 1, anchor_col + radius_px);
+
+    for (int r = r_min; r <= r_max; ++r) {
+        for (int c = c_min; c <= c_max; ++c) {
+            double wx, wy;
+            gridToWorld(c, r, wx, wy);
+            double dx = wx - anchor_x;
+            double dy = wy - anchor_y;
+            if (dx * dx + dy * dy <= r2_max)
+                map_out.at<uchar>(r, c) = 0;
         }
     }
 }
