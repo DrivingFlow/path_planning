@@ -425,11 +425,11 @@ private:
         for (int i = 0; i < 5; ++i) {
             const cv::Mat& g = queue[i];
             if (g.empty() || g.cols != sz || g.rows != sz) continue;
-            std::vector<uint8_t>* occ[] = {&msg.occ_0, &msg.occ_1, &msg.occ_2, &msg.occ_3, &msg.occ_4};
+            std::vector<float>* occ[] = {&msg.occ_0, &msg.occ_1, &msg.occ_2, &msg.occ_3, &msg.occ_4};
             occ[i]->resize(n);
             for (int r = 0; r < sz; ++r)
                 for (int c = 0; c < sz; ++c)
-                    (*occ[i])[static_cast<size_t>(r * sz + c)] = g.at<uchar>(r, c) ? 1 : 0;
+                    (*occ[i])[static_cast<size_t>(r * sz + c)] = g.at<uchar>(r, c) ? 1.f : 0.f;
         }
         return msg;
     }
@@ -532,25 +532,26 @@ private:
         for (int r = 0; r < sz; ++r)
             for (int c = 0; c < sz; ++c) {
                 size_t idx = static_cast<size_t>(r * sz + c);
-                msg.occ_0[idx] = queue[0].grid.at<uchar>(r, c) ? 1 : 0;
-                msg.occ_1[idx] = queue[1].grid.at<uchar>(r, c) ? 1 : 0;
-                msg.occ_2[idx] = queue[2].grid.at<uchar>(r, c) ? 1 : 0;
-                msg.occ_3[idx] = queue[3].grid.at<uchar>(r, c) ? 1 : 0;
-                msg.occ_4[idx] = queue[4].grid.at<uchar>(r, c) ? 1 : 0;
+                msg.occ_0[idx] = queue[0].grid.at<uchar>(r, c) ? 1.f : 0.f;
+                msg.occ_1[idx] = queue[1].grid.at<uchar>(r, c) ? 1.f : 0.f;
+                msg.occ_2[idx] = queue[2].grid.at<uchar>(r, c) ? 1.f : 0.f;
+                msg.occ_3[idx] = queue[3].grid.at<uchar>(r, c) ? 1.f : 0.f;
+                msg.occ_4[idx] = queue[4].grid.at<uchar>(r, c) ? 1.f : 0.f;
             }
-        msg.delta_0.assign(n, 0);
+        msg.delta_0.assign(n, 0.f);
         msg.delta_1.resize(n); msg.delta_2.resize(n); msg.delta_3.resize(n); msg.delta_4.resize(n);
         for (int r = 0; r < sz; ++r)
             for (int c = 0; c < sz; ++c) {
                 size_t idx = static_cast<size_t>(r * sz + c);
-                int8_t d1 = static_cast<int8_t>(queue[1].grid.at<uchar>(r, c) ? 1 : 0) - static_cast<int8_t>(queue[0].grid.at<uchar>(r, c) ? 1 : 0);
-                int8_t d2 = static_cast<int8_t>(queue[2].grid.at<uchar>(r, c) ? 1 : 0) - static_cast<int8_t>(queue[1].grid.at<uchar>(r, c) ? 1 : 0);
-                int8_t d3 = static_cast<int8_t>(queue[3].grid.at<uchar>(r, c) ? 1 : 0) - static_cast<int8_t>(queue[2].grid.at<uchar>(r, c) ? 1 : 0);
-                int8_t d4 = static_cast<int8_t>(queue[4].grid.at<uchar>(r, c) ? 1 : 0) - static_cast<int8_t>(queue[3].grid.at<uchar>(r, c) ? 1 : 0);
-                msg.delta_1[idx] = d1;
-                msg.delta_2[idx] = d2;
-                msg.delta_3[idx] = d3;
-                msg.delta_4[idx] = d4;
+                float o0 = queue[0].grid.at<uchar>(r, c) ? 1.f : 0.f;
+                float o1 = queue[1].grid.at<uchar>(r, c) ? 1.f : 0.f;
+                float o2 = queue[2].grid.at<uchar>(r, c) ? 1.f : 0.f;
+                float o3 = queue[3].grid.at<uchar>(r, c) ? 1.f : 0.f;
+                float o4 = queue[4].grid.at<uchar>(r, c) ? 1.f : 0.f;
+                msg.delta_1[idx] = o1 - o0;
+                msg.delta_2[idx] = o2 - o1;
+                msg.delta_3[idx] = o3 - o2;
+                msg.delta_4[idx] = o4 - o3;
             }
 
         msg.motion_forward_speed.resize(5);
