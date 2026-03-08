@@ -126,10 +126,17 @@ public:
             std::string input_topic = get_parameter("model_occ_input_topic").as_string();
             std::string output_topic = get_parameter("model_predicted_output_topic").as_string();
             pub_model_input_ = create_publisher<path_planning::msg::AgentCenteredInput>(input_topic, 10);
-            sub_model_output_ = create_subscription<path_planning::msg::OccupancyGridArray>(
-                output_topic, 10, [this](const path_planning::msg::OccupancyGridArray::SharedPtr msg) {
-                    onPredictedGrids(msg);
-                });
+            if (mode == "map_frame_model") {
+                sub_model_output_ = create_subscription<path_planning::msg::OccupancyGridArray>(
+                    output_topic, 10, [this](const path_planning::msg::OccupancyGridArray::SharedPtr msg) {
+                        onPredictedGrids(msg);
+                    });
+            } else {
+                sub_model_output_agent_ = create_subscription<path_planning::msg::AgentCenteredInput>(
+                    output_topic, 10, [this](const path_planning::msg::AgentCenteredInput::SharedPtr msg) {
+                        onPredictedAgentCentered(msg);
+                    });
+            }
         }
 
         pub_path_ = create_publisher<nav_msgs::msg::Path>("/planned_path", 10);
@@ -220,6 +227,11 @@ private:
         last_predicted_array_ = msg;
     }
 
+    void onPredictedAgentCentered(const path_planning::msg::AgentCenteredInput::SharedPtr msg) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        last_predicted_agent_ = msg;
+    }
+
     /** Build Boltzmann weights w_i = exp(-i/T) / Z for i = 0..n-1. */
     static std::vector<double> boltmannWeights(int n, double T) {
         if (n <= 0 || T <= 0) return {};
@@ -252,7 +264,22 @@ private:
         return out;
     }
 
-    /** Convert nav_msgs::OccupancyGrid to cv::Mat (0=free, 255=obstacle). */
+    /** Convert AgentCenteredInput occ_0..occ_4 (float32, 0/1) to cv::Mat 201x201 (0/255). Only includes grids with size 201*201. */
+    static std::vector<cv::Mat> agentCenteredInputToMats(const path_planning::msg::AgentCenteredInput& msg) {
+        const int sz = OccGridBridge::EGO_GRID_SIZE;
+        const size_t n = static_cast<size_t>(sz * sz);
+        std::vector<cv::Mat> out;
+        const std::vector<float>* occs[] = {&msg.occ_0, &msg.occ_1, &msg.occ_2, &msg.occ_3, &msg.occ_4};
+        for (int i = 0; i < 5; ++i) {
+            if (occs[i]->size() != n) continue;
+            cv::Mat m(sz, sz, CV_8UC1);
+            for (int r = 0; r < sz; ++r)
+                for (int c = 0; c < sz; ++c)
+                    m.at<uchar>(r, c) = (*occs[i])[static_cast<size_t>(r * sz + c)] > 0.5f ? 255 : 0;
+            out.push_back(m);
+        }
+        return out;
+    }
     static cv::Mat occupancyGridToMat(const nav_msgs::msg::OccupancyGrid& msg) {
         int w = static_cast<int>(msg.info.width);
         int h = static_cast<int>(msg.info.height);
@@ -669,6 +696,7 @@ private:
         bool have_pose, have_goal;
         std::vector<std::array<double, 2>> current_path;
         path_planning::msg::OccupancyGridArray::SharedPtr predicted_msg;
+        path_planning::msg::AgentCenteredInput::SharedPtr predicted_agent_msg;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             live_pts = live_points_;
@@ -684,6 +712,7 @@ private:
             have_goal = have_goal_;
             current_path = current_path_;
             predicted_msg = last_predicted_array_;
+            predicted_agent_msg = last_predicted_agent_;
         }
 
         std::string mode = get_parameter("occ_data_mode").as_string();
@@ -792,40 +821,23 @@ private:
                     pub_model_input_->publish(msg);
                 }
             }
-            if (predicted_msg && !predicted_msg->grids.empty()) {
-                // Log raw values from model output for debugging
-                if (!predicted_msg->grids.empty() && !predicted_msg->grids[0].data.empty()) {
-                    std::set<int8_t> unique_vals;
-                    int8_t min_val = 127, max_val = -128;
-                    for (const auto& val : predicted_msg->grids[0].data) {
-                        unique_vals.insert(val);
-                        min_val = std::min(min_val, val);
-                        max_val = std::max(max_val, val);
+            if (predicted_agent_msg) {
+                std::vector<cv::Mat> grids = agentCenteredInputToMats(*predicted_agent_msg);
+                if (!grids.empty()) {
+                    int N = get_parameter("num_predicted_frames").as_int();
+                    double T = get_parameter("prediction_temperature").as_double();
+                    size_t n = std::min(static_cast<size_t>(N), grids.size());
+                    std::vector<double> w = boltmannWeights(static_cast<int>(n), T);
+                    cv::Mat weighted_ego = weightCombineGrids(grids, w);
+                    if (!weighted_ego.empty()) {
+                        double ax, ay, ayaw;
+                        { std::lock_guard<std::mutex> lock(mutex_); ax = anchor_x_; ay = anchor_y_; ayaw = anchor_yaw_; }
+                        combined = bridge_.mergeWithStaticMap(cv::Mat::zeros(bridge_.gridHeight(), bridge_.gridWidth(), CV_8UC1));
+                        bridge_.zeroEgoFootprintInMap(ax, ay, ayaw, combined);
+                        bridge_.pasteEgoGridIntoMap(weighted_ego, ax, ay, ayaw, combined);
+                    } else {
+                        combined = bridge_.mergeWithStaticMap(cv::Mat::zeros(bridge_.gridHeight(), bridge_.gridWidth(), CV_8UC1));
                     }
-                    std::string unique_str = "{";
-                    for (auto v : unique_vals) {
-                        if (unique_str.size() > 1) unique_str += ", ";
-                        unique_str += std::to_string(static_cast<int>(v));
-                    }
-                    unique_str += "}";
-                    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
-                        "Model output (agent_centered) - Range: [%d, %d], Unique values: %s",
-                        static_cast<int>(min_val), static_cast<int>(max_val), unique_str.c_str());
-                }
-                int N = get_parameter("num_predicted_frames").as_int();
-                double T = get_parameter("prediction_temperature").as_double();
-                size_t n = std::min(static_cast<size_t>(N), predicted_msg->grids.size());
-                std::vector<cv::Mat> grids(n);
-                for (size_t i = 0; i < n; ++i)
-                    grids[i] = occupancyGridToMat(predicted_msg->grids[i]);
-                std::vector<double> w = boltmannWeights(static_cast<int>(n), T);
-                cv::Mat weighted_ego = weightCombineGrids(grids, w);
-                if (!weighted_ego.empty()) {
-                    double ax, ay, ayaw;
-                    { std::lock_guard<std::mutex> lock(mutex_); ax = anchor_x_; ay = anchor_y_; ayaw = anchor_yaw_; }
-                    combined = bridge_.mergeWithStaticMap(cv::Mat::zeros(bridge_.gridHeight(), bridge_.gridWidth(), CV_8UC1));
-                    bridge_.zeroEgoFootprintInMap(ax, ay, ayaw, combined);
-                    bridge_.pasteEgoGridIntoMap(weighted_ego, ax, ay, ayaw, combined);
                 } else {
                     combined = bridge_.mergeWithStaticMap(cv::Mat::zeros(bridge_.gridHeight(), bridge_.gridWidth(), CV_8UC1));
                 }
@@ -988,6 +1000,7 @@ private:
     rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr pub_occ_grid_;
     rclcpp::Publisher<path_planning::msg::AgentCenteredInput>::SharedPtr pub_model_input_;
     rclcpp::Subscription<path_planning::msg::OccupancyGridArray>::SharedPtr sub_model_output_;
+    rclcpp::Subscription<path_planning::msg::AgentCenteredInput>::SharedPtr sub_model_output_agent_;
     rclcpp::TimerBase::SharedPtr plan_timer_;
 
     std::mutex mutex_;
@@ -999,10 +1012,11 @@ private:
     std::vector<std::array<double, 2>> current_path_;
     rclcpp::Time last_plan_time_{0};
 
-    // Model modes: queues and last predicted message
+    // Model modes: last predicted messages (map_frame uses OccupancyGridArray; agent_centered uses AgentCenteredInput with occ_* only)
+    path_planning::msg::OccupancyGridArray::SharedPtr last_predicted_array_;
+    path_planning::msg::AgentCenteredInput::SharedPtr last_predicted_agent_;
     std::deque<cv::Mat> queue_map_frame_;
     std::deque<EgoFrame> queue_ego_frames_;
-    path_planning::msg::OccupancyGridArray::SharedPtr last_predicted_array_;
     double anchor_x_ = 0, anchor_y_ = 0, anchor_yaw_ = 0;
 };
 
