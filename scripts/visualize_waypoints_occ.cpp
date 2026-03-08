@@ -180,15 +180,15 @@ private:
                 int8_t val = occ.data[idx];
                 if (val < 0) {
                     img.at<uchar>(r, c) = 127;
-                } else if (val <= 1) {
-                    // Handle model output in 0-1 range (agent_centered_model)
-                    // val == 0 -> free space (255), val == 1 -> occupied (0)
-                    img.at<uchar>(r, c) = (val == 0) ? 255 : 0;
-                } else {
-                    // Standard occupancy grid format (0-100 scale)
+                } else if (val <= 100) {
+                    // Model output in 0-99 range or standard occupancy (0-100)
+                    // Map 0-99/100 to 0-255 grayscale (inverted: 0=white/free, high=black/obstacle)
                     int v = 100 - val;
                     v = std::max(0, std::min(100, v));
                     img.at<uchar>(r, c) = static_cast<uchar>(v * 255 / 100);
+                } else {
+                    // Values > 100 shouldn't occur, treat as obstacle
+                    img.at<uchar>(r, c) = 0;
                 }
             }
         }
@@ -209,13 +209,14 @@ private:
                     if (val < 0) {
                         // Unknown/default cells treated as obstacles
                         free_cell = false;
-                    } else if (val <= 1) {
-                        // Handle model output in 0-1 range (agent_centered_model)
-                        // val == 0 -> free, val == 1 -> occupied
-                        free_cell = (val == 0);
+                    } else if (val >= 0 && val <= 100) {
+                        // Model output (0-99) or standard occupancy grid (0-100)
+                        // 0 = free, values > threshold are obstacles
+                        // Use a threshold (e.g., 50 for 0-99 range)
+                        free_cell = (val < 50);
                     } else {
-                        // Standard occupancy grid: 0 = free, >0 = obstacle
-                        free_cell = (val == 0);
+                        // Values > 100 treated as obstacles
+                        free_cell = false;
                     }
                     binary_inv.at<uchar>(r, c) = free_cell ? 255 : 0;
                 }
