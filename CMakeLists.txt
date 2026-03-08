@@ -16,9 +16,10 @@ find_package(OpenCV REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
-# Custom message: array of occupancy grids for map updater input/output
+# Custom messages: array of occupancy grids; agent-centered binary input
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/OccupancyGridArray.msg"
+  "msg/AgentCenteredInput.msg"
   DEPENDENCIES std_msgs nav_msgs
 )
 

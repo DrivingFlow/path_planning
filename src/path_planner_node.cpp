@@ -17,6 +17,7 @@
 #include <std_msgs/msg/header.hpp>
 
 #include "path_planning/msg/occupancy_grid_array.hpp"
+#include "path_planning/msg/agent_centered_input.hpp"
 
 #include <opencv2/opencv.hpp>
 #include <vector>
@@ -93,7 +94,7 @@ public:
         declare_parameter<double>("prediction_temperature", 1.0);
         // Number of predicted frames we expect from map updater (model modes only)
         declare_parameter<int>("num_predicted_frames", 5);
-        // Topic to publish 5 input grids to map updater (model modes only)
+        // Topic to publish model input (both map_frame and agent_centered use AgentCenteredInput)
         declare_parameter<std::string>("model_occ_input_topic", "/map_updater/occ_grid_input");
         // Topic to subscribe for predicted grids from map updater (model modes only)
         declare_parameter<std::string>("model_predicted_output_topic", "/map_updater/predicted_grid_output");
@@ -124,7 +125,7 @@ public:
         if (mode == "map_frame_model" || mode == "agent_centered_model") {
             std::string input_topic = get_parameter("model_occ_input_topic").as_string();
             std::string output_topic = get_parameter("model_predicted_output_topic").as_string();
-            pub_model_input_ = create_publisher<path_planning::msg::OccupancyGridArray>(input_topic, 10);
+            pub_model_input_ = create_publisher<path_planning::msg::AgentCenteredInput>(input_topic, 10);
             sub_model_output_ = create_subscription<path_planning::msg::OccupancyGridArray>(
                 output_topic, 10, [this](const path_planning::msg::OccupancyGridArray::SharedPtr msg) {
                     onPredictedGrids(msg);
@@ -412,6 +413,27 @@ private:
         return arr;
     }
 
+    /** Build AgentCenteredInput for map_frame: mode=0, occ_0..occ_4 each 1216x1216 binary (0/1), deltas/motion empty. */
+    path_planning::msg::AgentCenteredInput toAgentCenteredInputMapFrame(const std::deque<cv::Mat>& queue) const {
+        path_planning::msg::AgentCenteredInput msg;
+        msg.header.frame_id = "map";
+        msg.header.stamp = now();
+        msg.mode = 0;
+        const int sz = MAP_FRAME_CANVAS_SIZE;
+        const size_t n = static_cast<size_t>(sz * sz);
+        if (queue.size() != 5u) return msg;
+        for (int i = 0; i < 5; ++i) {
+            const cv::Mat& g = queue[i];
+            if (g.empty() || g.cols != sz || g.rows != sz) continue;
+            std::vector<uint8_t>* occ[] = {&msg.occ_0, &msg.occ_1, &msg.occ_2, &msg.occ_3, &msg.occ_4};
+            occ[i]->resize(n);
+            for (int r = 0; r < sz; ++r)
+                for (int c = 0; c < sz; ++c)
+                    (*occ[i])[static_cast<size_t>(r * sz + c)] = g.at<uchar>(r, c) ? 1 : 0;
+        }
+        return msg;
+    }
+
     /** Build OccupancyGridArray from queue of 201x201 ego grids (agent-centered: 5 frames).
      * Now matches save_frame training: 10 grids = occ_0, delta_0, occ_1, delta_1, ..., occ_4, delta_4
      * (delta_0 = zeros). Delta encoded as 0-100: 0=-1, 50=0, 100=+1.
@@ -493,6 +515,65 @@ private:
             arr.motion_yaw_rate[j] = static_cast<float>(dyaw / dt);
         }
         return arr;
+    }
+
+    /** Build AgentCenteredInput: 10 binary 201x201 grids (0 or 1) + motion. No nav_msgs. */
+    path_planning::msg::AgentCenteredInput toAgentCenteredInput(const std::deque<EgoFrame>& queue) const {
+        path_planning::msg::AgentCenteredInput msg;
+        msg.header.frame_id = "map";
+        msg.header.stamp = now();
+        msg.mode = 1;
+        const int sz = OccGridBridge::EGO_GRID_SIZE;
+        const size_t n = static_cast<size_t>(sz * sz);
+
+        if (queue.size() != 5u) return msg;
+
+        msg.occ_0.resize(n); msg.occ_1.resize(n); msg.occ_2.resize(n); msg.occ_3.resize(n); msg.occ_4.resize(n);
+        for (int r = 0; r < sz; ++r)
+            for (int c = 0; c < sz; ++c) {
+                size_t idx = static_cast<size_t>(r * sz + c);
+                msg.occ_0[idx] = queue[0].grid.at<uchar>(r, c) ? 1 : 0;
+                msg.occ_1[idx] = queue[1].grid.at<uchar>(r, c) ? 1 : 0;
+                msg.occ_2[idx] = queue[2].grid.at<uchar>(r, c) ? 1 : 0;
+                msg.occ_3[idx] = queue[3].grid.at<uchar>(r, c) ? 1 : 0;
+                msg.occ_4[idx] = queue[4].grid.at<uchar>(r, c) ? 1 : 0;
+            }
+        msg.delta_0.assign(n, 0);
+        msg.delta_1.resize(n); msg.delta_2.resize(n); msg.delta_3.resize(n); msg.delta_4.resize(n);
+        for (int r = 0; r < sz; ++r)
+            for (int c = 0; c < sz; ++c) {
+                size_t idx = static_cast<size_t>(r * sz + c);
+                int8_t d1 = static_cast<int8_t>(queue[1].grid.at<uchar>(r, c) ? 1 : 0) - static_cast<int8_t>(queue[0].grid.at<uchar>(r, c) ? 1 : 0);
+                int8_t d2 = static_cast<int8_t>(queue[2].grid.at<uchar>(r, c) ? 1 : 0) - static_cast<int8_t>(queue[1].grid.at<uchar>(r, c) ? 1 : 0);
+                int8_t d3 = static_cast<int8_t>(queue[3].grid.at<uchar>(r, c) ? 1 : 0) - static_cast<int8_t>(queue[2].grid.at<uchar>(r, c) ? 1 : 0);
+                int8_t d4 = static_cast<int8_t>(queue[4].grid.at<uchar>(r, c) ? 1 : 0) - static_cast<int8_t>(queue[3].grid.at<uchar>(r, c) ? 1 : 0);
+                msg.delta_1[idx] = d1;
+                msg.delta_2[idx] = d2;
+                msg.delta_3[idx] = d3;
+                msg.delta_4[idx] = d4;
+            }
+
+        msg.motion_forward_speed.resize(5);
+        msg.motion_yaw_rate.resize(5);
+        msg.motion_forward_speed[0] = 0.f;
+        msg.motion_yaw_rate[0] = 0.f;
+        for (size_t j = 1; j < 5u; ++j) {
+            const EgoFrame& curr = queue[j];
+            const EgoFrame& prev = queue[j - 1];
+            double dt = (curr.time - prev.time).seconds();
+            if (dt < 1e-6) dt = 1e-6;
+            double dx = curr.x - prev.x;
+            double dy = curr.y - prev.y;
+            double cy = std::cos(curr.yaw);
+            double sy = std::sin(curr.yaw);
+            double body_x = cy * dx + sy * dy;
+            double dyaw = curr.yaw - prev.yaw;
+            while (dyaw > 3.141592653589793) dyaw -= 2.0 * 3.141592653589793;
+            while (dyaw < -3.141592653589793) dyaw += 2.0 * 3.141592653589793;
+            msg.motion_forward_speed[j] = static_cast<float>(body_x / dt);
+            msg.motion_yaw_rate[j] = static_cast<float>(dyaw / dt);
+        }
+        return msg;
     }
 
     /**
@@ -635,12 +716,12 @@ private:
                     while (queue_map_frame_.size() > 5u) queue_map_frame_.pop_front();
                 }
             }
-            if (pub_model_input_) {
+                if (pub_model_input_ && queue_map_frame_.size() == 5u) {
                 std::deque<cv::Mat> q;
                 { std::lock_guard<std::mutex> lock(mutex_); q = queue_map_frame_; }
                 if (q.size() == 5u) {
-                    path_planning::msg::OccupancyGridArray arr = toOccupancyGridArrayMapFrame(q);
-                    pub_model_input_->publish(arr);
+                    path_planning::msg::AgentCenteredInput msg = toAgentCenteredInputMapFrame(q);
+                    pub_model_input_->publish(msg);
                 }
             }
             if (predicted_msg && !predicted_msg->grids.empty()) {
@@ -706,8 +787,8 @@ private:
                 if (pub_model_input_ && queue_ego_frames_.size() == 5u) {
                     std::deque<EgoFrame> q;
                     { std::lock_guard<std::mutex> lock(mutex_); q = queue_ego_frames_; }
-                    path_planning::msg::OccupancyGridArray arr = toOccupancyGridArrayEgo(q);
-                    pub_model_input_->publish(arr);
+                    path_planning::msg::AgentCenteredInput msg = toAgentCenteredInput(q);
+                    pub_model_input_->publish(msg);
                 }
             }
             if (predicted_msg && !predicted_msg->grids.empty()) {
@@ -904,7 +985,7 @@ private:
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pub_path_;
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pub_waypoints_;
     rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr pub_occ_grid_;
-    rclcpp::Publisher<path_planning::msg::OccupancyGridArray>::SharedPtr pub_model_input_;
+    rclcpp::Publisher<path_planning::msg::AgentCenteredInput>::SharedPtr pub_model_input_;
     rclcpp::Subscription<path_planning::msg::OccupancyGridArray>::SharedPtr sub_model_output_;
     rclcpp::TimerBase::SharedPtr plan_timer_;
 
