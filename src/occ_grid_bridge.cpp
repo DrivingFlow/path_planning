@@ -173,11 +173,13 @@ void OccGridBridge::pasteEgoGridIntoMap(const cv::Mat& ego_grid,
     const double cy = std::cos(anchor_yaw);
     const double sy = std::sin(anchor_yaw);
 
+    const double r2_max = EGO_RADIUS_M * EGO_RADIUS_M;
     for (int r = 0; r < EGO_GRID_SIZE; ++r) {
         for (int c = 0; c < EGO_GRID_SIZE; ++c) {
             if (ego_grid.at<uchar>(r, c) == 0) continue;
             double ego_x = ox_ego + c * res_ego;
             double ego_y = oy_ego - r * res_ego;
+            if (ego_x * ego_x + ego_y * ego_y > r2_max) continue;  // circular mask
             double map_x = anchor_x + cy * ego_x - sy * ego_y;
             double map_y = anchor_y + sy * ego_x + cy * ego_y;
             int col, row;
@@ -200,10 +202,12 @@ void OccGridBridge::zeroEgoFootprintInMap(double anchor_x, double anchor_y, doub
     const double cy = std::cos(anchor_yaw);
     const double sy = std::sin(anchor_yaw);
 
+    const double r2_max = EGO_RADIUS_M * EGO_RADIUS_M;
     for (int r = 0; r < EGO_GRID_SIZE; ++r) {
         for (int c = 0; c < EGO_GRID_SIZE; ++c) {
             double ego_x = ox_ego + c * res_ego;
             double ego_y = oy_ego - r * res_ego;
+            if (ego_x * ego_x + ego_y * ego_y > r2_max) continue;  // circular mask
             double map_x = anchor_x + cy * ego_x - sy * ego_y;
             double map_y = anchor_y + sy * ego_x + cy * ego_y;
             int col, row;

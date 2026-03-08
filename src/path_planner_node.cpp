@@ -100,6 +100,9 @@ public:
         declare_parameter<std::string>("model_occ_input_topic", "/map_updater/occ_grid_input");
         // Topic to subscribe for predicted grids from map updater (model modes only)
         declare_parameter<std::string>("model_predicted_output_topic", "/map_updater/predicted_grid_output");
+        // Stride between sampled frames sent to agent-centered model (1 = consecutive, 5 = every 5th).
+        // Queue size is automatically set to (4 * stride + 1) to always have 5 strided frames available.
+        declare_parameter<int>("agent_frame_stride", 5);
 
         std::string map_pcd = get_parameter("map_pcd_path").as_string();
         std::string map_png = get_parameter("map_png_path").as_string();
@@ -282,12 +285,11 @@ private:
         }
         return out;
     }
-    static cv::Mat occupancyGridToMat(const nav_msgs::msg::OccupancyGrid& msg) {
+    static cv::Mat occupancyGridToMat(const nav_msgs::msg::OccupancyGrid& msg, double threshold) {
         int w = static_cast<int>(msg.info.width);
         int h = static_cast<int>(msg.info.height);
         if (w <= 0 || h <= 0 || msg.data.size() != static_cast<size_t>(w * h)) return cv::Mat();
         cv::Mat m(h, w, CV_8UC1);
-        double threshold = get_parameter("model_occupancy_threshold").as_double();
         for (int i = 0; i < h * w; ++i) {
             int8_t v = msg.data[i];
             // Handle model output (0-99 range) and standard occupancy values
@@ -774,10 +776,11 @@ private:
             if (predicted_msg && !predicted_msg->grids.empty()) {
                 int N = get_parameter("num_predicted_frames").as_int();
                 double T = get_parameter("prediction_temperature").as_double();
+                double threshold = get_parameter("model_occupancy_threshold").as_double();
                 size_t n = std::min(static_cast<size_t>(N), predicted_msg->grids.size());
                 std::vector<cv::Mat> grids(n);
                 for (size_t i = 0; i < n; ++i)
-                    grids[i] = occupancyGridToMat(predicted_msg->grids[i]);
+                    grids[i] = occupancyGridToMat(predicted_msg->grids[i], threshold);
                 std::vector<double> w = boltmannWeights(static_cast<int>(n), T);
                 cv::Mat weighted = weightCombineGrids(grids, w);
                 if (!weighted.empty())
@@ -800,18 +803,24 @@ private:
                 frame.y = start_y;
                 frame.yaw = start_yaw;
                 frame.time = now();
+                const int stride = get_parameter("agent_frame_stride").as_int();
+                const size_t required_queue = static_cast<size_t>(4 * std::max(1, stride) + 1);
                 {
                     std::lock_guard<std::mutex> lock(mutex_);
                     queue_ego_frames_.push_back(frame);
-                    while (queue_ego_frames_.size() > 5u) queue_ego_frames_.pop_front();
+                    while (queue_ego_frames_.size() > required_queue) queue_ego_frames_.pop_front();
                     anchor_x_ = queue_ego_frames_.back().x;
                     anchor_y_ = queue_ego_frames_.back().y;
                     anchor_yaw_ = queue_ego_frames_.back().yaw;
                 }
-                if (pub_model_input_ && queue_ego_frames_.size() == 5u) {
-                    std::deque<EgoFrame> q;
-                    { std::lock_guard<std::mutex> lock(mutex_); q = queue_ego_frames_; }
-                    path_planning::msg::AgentCenteredInput msg = toAgentCenteredInput(q);
+                if (pub_model_input_ && queue_ego_frames_.size() == required_queue) {
+                    std::deque<EgoFrame> q_full;
+                    { std::lock_guard<std::mutex> lock(mutex_); q_full = queue_ego_frames_; }
+                    // Sample 5 frames at stride intervals: indices 0, stride, 2*stride, 3*stride, 4*stride
+                    std::deque<EgoFrame> q_strided;
+                    for (int s = 0; s < 5; ++s)
+                        q_strided.push_back(q_full[static_cast<size_t>(s * std::max(1, stride))]);
+                    path_planning::msg::AgentCenteredInput msg = toAgentCenteredInput(q_strided);
                     pub_model_input_->publish(msg);
                 }
             }

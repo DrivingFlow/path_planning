@@ -49,6 +49,7 @@ def generate_launch_description():
     model_occupancy_threshold = LaunchConfiguration("model_occupancy_threshold", default="0.5")
     model_occ_input_topic = LaunchConfiguration("model_occ_input_topic", default="/map_updater/occ_grid_input")
     model_predicted_output_topic = LaunchConfiguration("model_predicted_output_topic", default="/map_updater/predicted_grid_output")
+    agent_frame_stride = LaunchConfiguration("agent_frame_stride", default="5")
 
     return LaunchDescription(
         [
@@ -126,6 +127,8 @@ def generate_launch_description():
             DeclareLaunchArgument("model_occupancy_threshold", default_value="0.3"),
             DeclareLaunchArgument("model_occ_input_topic", default_value="/map_updater/occ_grid_input"),
             DeclareLaunchArgument("model_predicted_output_topic", default_value="/map_updater/predicted_grid_output"),
+            # Stride between frames sampled for the agent-centered model (queue size = 4*stride+1)
+            DeclareLaunchArgument("agent_frame_stride", default_value="5"),
             Node(
                 package="path_planning",
                 executable="path_planner_node",
@@ -157,6 +160,7 @@ def generate_launch_description():
                         "model_occupancy_threshold": model_occupancy_threshold,
                         "model_occ_input_topic": model_occ_input_topic,
                         "model_predicted_output_topic": model_predicted_output_topic,
+                        "agent_frame_stride": agent_frame_stride,
                     }
                 ],
                 remappings=[
