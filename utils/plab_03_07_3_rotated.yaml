@@ -14,3 +14,5 @@ occupied_thresh: 0.6
 origin: [-39.59141720482783, -24.30127525259191, 0.0]
 resolution: 0.05
 z_range: [0.05, 1]
+col_view: [420, 920]
+row_view: [60, 610]
