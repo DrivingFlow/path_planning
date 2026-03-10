@@ -149,7 +149,7 @@ public:
         pub_occ_grid_ = create_publisher<nav_msgs::msg::OccupancyGrid>("/occupancy_grid", 10);
 
         plan_timer_ = create_wall_timer(
-            std::chrono::milliseconds(500),
+            std::chrono::milliseconds(100),
             [this]() { runPlanningCycle(); });
     }
 

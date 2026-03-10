@@ -54,9 +54,9 @@ def generate_launch_description():
     return LaunchDescription(
         [
             # Path to the PCD map file
-            DeclareLaunchArgument("map_pcd_path", default_value="/home/dog22/path_planning_ws/src/path_planning/utils/henn_2nd_rotated.pcd"),
+            DeclareLaunchArgument("map_pcd_path", default_value="/home/dog22/path_planning_ws/src/path_planning/utils/plab_03_07_3_rotated.pcd"),
             # Path to the PNG occupancy grid map file
-            DeclareLaunchArgument("map_png_path", default_value="/home/dog22/path_planning_ws/src/path_planning/utils/henn_2nd_rotated.png"),
+            DeclareLaunchArgument("map_png_path", default_value="/home/dog22/path_planning_ws/src/path_planning/utils/plab_03_07_3_rotated.png"),
             # Resolution of the occupancy grid (meters per cell)
             DeclareLaunchArgument("resolution", default_value="0.05"),
             # Minimum z-coordinate for obstacle detection (meters)
@@ -98,21 +98,21 @@ def generate_launch_description():
             # Whether to show agent-centered 5 m radius ROI panel in C++ visualizer (independent of energy map)
             DeclareLaunchArgument("show_agent_centered_roi", default_value="False"),
             # Minimum column for visualization view; -1 = full grid width
-            DeclareLaunchArgument("view_col_min", default_value="610"),
+            DeclareLaunchArgument("view_col_min", default_value="420"),
             # Maximum column for visualization view; -1 = full grid width
-            DeclareLaunchArgument("view_col_max", default_value="2050"),
+            DeclareLaunchArgument("view_col_max", default_value="920"),
             # Minimum row for visualization view; -1 = full grid height
-            DeclareLaunchArgument("view_row_min", default_value="50"),
+            DeclareLaunchArgument("view_row_min", default_value="60"),
             # Maximum row for visualization view; -1 = full grid height
-            DeclareLaunchArgument("view_row_max", default_value="750"),
+            DeclareLaunchArgument("view_row_max", default_value="610"),
             # RRT sampling min col (grid index); -1 = full grid
-            DeclareLaunchArgument("sample_col_min", default_value="610"),
+            DeclareLaunchArgument("sample_col_min", default_value="420"),
             # RRT sampling max col (grid index); -1 = full grid
-            DeclareLaunchArgument("sample_col_max", default_value="2050"),
+            DeclareLaunchArgument("sample_col_max", default_value="920"),
             # RRT sampling min row (grid index); -1 = full grid
-            DeclareLaunchArgument("sample_row_min", default_value="50"),
+            DeclareLaunchArgument("sample_row_min", default_value="60"),
             # RRT sampling max row (grid index); -1 = full grid
-            DeclareLaunchArgument("sample_row_max", default_value="750"),
+            DeclareLaunchArgument("sample_row_max", default_value="610"),
             # If True, /goal_pose x,y are grid col,row; else world (m)
             DeclareLaunchArgument("goal_in_pixels", default_value="False"),
             # Path planner: 'rrt' or 'astar' (A* with clearance energy)
