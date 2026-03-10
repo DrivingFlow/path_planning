@@ -26,6 +26,7 @@
 #include <mutex>
 #include <cstring>
 #include <cmath>
+#include <chrono>
 #include <string>
 #include <sstream>
 
@@ -69,10 +70,8 @@ public:
         // RRT* step size in meters (distance to extend tree per iteration, converted to pixels internally)
         declare_parameter<double>("step_size", 0.4);
         // Goal sample rate (probability 0-1): fraction of iterations that sample the goal directly
-        // Higher values (e.g., 0.1) bias toward goal, lower (e.g., 0.01) explore more randomly
         declare_parameter<double>("rrt_goal_sample_rate", 0.05);
         // Lookahead distance in meters: if obstacle intersection is beyond this distance along path, don't replan
-        // (assumes moving objects will be gone by the time robot reaches that point)
         declare_parameter<double>("replan_lookahead_distance", 4.0);
         // Force replan every N seconds (e.g. when manually driving so path drifts; 0 = disable periodic replan)
         declare_parameter<double>("replan_interval_sec", 5.0);
@@ -81,28 +80,18 @@ public:
         declare_parameter<int>("sample_col_max", -1);
         declare_parameter<int>("sample_row_min", -1);
         declare_parameter<int>("sample_row_max", -1);
-        // If true, /goal_pose x,y are interpreted as grid col,row; else as world (m)
         declare_parameter<bool>("goal_in_pixels", false);
-        // Planner algorithm: "rrt" or "astar" (A* with clearance energy)
         declare_parameter<std::string>("planner", "rrt");
-        // A* only: [beta_valley, smooth_alpha, smooth_beta, smooth_n_iter]; RRT ignores this (string or double array)
         declare_parameter("planner_settings", std::string("0.1,0.1,0.2,50"));
 
-        // Data source: "live" | "map_frame_model" | "agent_centered_model"
         declare_parameter<std::string>("occ_data_mode", "live");
-        // Boltzmann temperature for weighting predicted grids (model modes only)
         declare_parameter<double>("prediction_temperature", 1.0);
-        // Number of predicted frames we expect from map updater (model modes only)
         declare_parameter<int>("num_predicted_frames", 5);
-        // Threshold for binarizing analog model output values (0-1 range) before scaling to 0-255
         declare_parameter<double>("model_occupancy_threshold", 0.5);
-        // Topic to publish 5 input grids to map updater (model modes only)
         declare_parameter<std::string>("model_occ_input_topic", "/map_updater/occ_grid_input");
-        // Topic to subscribe for predicted grids from map updater (model modes only)
         declare_parameter<std::string>("model_predicted_output_topic", "/map_updater/predicted_grid_output");
-        // Stride between sampled frames sent to agent-centered model (1 = consecutive, 5 = every 5th).
-        // Queue size is automatically set to (4 * stride + 1) to always have 5 strided frames available.
         declare_parameter<int>("agent_frame_stride", 5);
+        declare_parameter<int>("plan_interval_ms", 500);
 
         std::string map_pcd = get_parameter("map_pcd_path").as_string();
         std::string map_png = get_parameter("map_png_path").as_string();
@@ -112,7 +101,6 @@ public:
             initBridge(map_pcd, map_png);
         }
 
-        // Placeholder topic names
         sub_live_cloud_ = create_subscription<sensor_msgs::msg::PointCloud2>(
             "/lidar_map", 10, [this](const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
                 onPointCloud(msg);
@@ -148,8 +136,11 @@ public:
         pub_waypoints_ = create_publisher<nav_msgs::msg::Path>("/waypoints", 10);
         pub_occ_grid_ = create_publisher<nav_msgs::msg::OccupancyGrid>("/occupancy_grid", 10);
 
+        int interval_ms = (mode == "agent_centered_model") ? 100 : get_parameter("plan_interval_ms").as_int();
+        RCLCPP_INFO(get_logger(), "Plan interval: %d ms (%s)", interval_ms,
+            (mode == "agent_centered_model") ? "agent_centered, matches 10 Hz lidar" : "plan_interval_ms");
         plan_timer_ = create_wall_timer(
-            std::chrono::milliseconds(100),
+            std::chrono::milliseconds(interval_ms),
             [this]() { runPlanningCycle(); });
     }
 
@@ -157,7 +148,7 @@ private:
     void initBridge(const std::string& map_pcd, const std::string& map_png) {
         double res = get_parameter("resolution").as_double();
         if (!bridge_.loadMapPcd(map_pcd, res)) {
-            RCLCPP_ERROR(get_logger(), "Failed to load map PCD: %s", map_pcd.c_str());
+            RCLCPP_ERROR(get_logger(), "Failed to load map PCD: %s", map_pcd);
             return;
         }
         RCLCPP_INFO(get_logger(),
@@ -167,23 +158,22 @@ private:
         int pcd_grid_w = bridge_.gridWidth();
         int pcd_grid_h = bridge_.gridHeight();
         if (!bridge_.loadEditedMapPng(map_png)) {
-            RCLCPP_ERROR(get_logger(), "Failed to load map PNG: %s", map_png.c_str());
+            RCLCPP_ERROR(get_logger(), "Failed to load map PNG: %s", map_png);
             return;
         }
         if (bridge_.gridWidth() != pcd_grid_w || bridge_.gridHeight() != pcd_grid_h) {
             RCLCPP_WARN(get_logger(),
-                "Dimension mismatch: map PCD grid is %d x %d but PNG is %d x %d. Using PNG dimensions. "
-                "Ensure the PNG was generated from the same PCD with the same resolution.",
+                "Dimension mismatch: map PCD grid is %d x %d but PNG is %d x %d. Using PNG dimensions.",
                 pcd_grid_w, pcd_grid_h, bridge_.gridWidth(), bridge_.gridHeight());
         }
         RCLCPP_INFO(get_logger(), "Bridge initialized: grid %d x %d", bridge_.gridWidth(), bridge_.gridHeight());
-        RCLCPP_INFO(get_logger(), "Bridge w_/h_ (gridWidth/gridHeight): %d x %d",
-            bridge_.gridWidth(), bridge_.gridHeight());
     }
 
     void onPointCloud(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
+        auto t_start = std::chrono::high_resolution_clock::now();
         std::lock_guard<std::mutex> lock(mutex_);
         live_points_.clear();
+        live_points_.reserve(static_cast<size_t>(msg->width * msg->height));
         int point_step = msg->point_step;
         int num = msg->width * msg->height;
         int x_off = -1, y_off = -1, z_off = -1;
@@ -201,6 +191,10 @@ private:
             float z = *reinterpret_cast<const float*>(pt + z_off);
             live_points_.push_back({{x, y, z}});
         }
+        auto t_end = std::chrono::high_resolution_clock::now();
+        double ms = std::chrono::duration<double, std::milli>(t_end - t_start).count();
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 500,
+            "[onPointCloud] parsed %d pts in %.1f ms", num, ms);
     }
 
     void onPose(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg) {
@@ -208,7 +202,6 @@ private:
         start_x_ = msg->pose.pose.position.x;
         start_y_ = msg->pose.pose.position.y;
         start_z_ = msg->pose.pose.position.z;
-
         const auto& q = msg->pose.pose.orientation;
         tf2::Quaternion quat(q.x, q.y, q.z, q.w);
         double roll, pitch, yaw;
@@ -237,7 +230,6 @@ private:
         last_predicted_agent_ = msg;
     }
 
-    /** Build Boltzmann weights w_i = exp(-i/T) / Z for i = 0..n-1. */
     static std::vector<double> boltmannWeights(int n, double T) {
         if (n <= 0 || T <= 0) return {};
         std::vector<double> w(n);
@@ -251,25 +243,26 @@ private:
         return w;
     }
 
-    /** Weight-combine N occupancy grids (0-255) into one cv::Mat (0=free, 255=obstacle). */
     static cv::Mat weightCombineGrids(const std::vector<cv::Mat>& grids, const std::vector<double>& weights) {
         if (grids.empty() || weights.size() != grids.size()) return cv::Mat();
         const int h = grids[0].rows, w = grids[0].cols;
         cv::Mat sum = cv::Mat::zeros(h, w, CV_64F);
+        Eigen::Map<Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> sum_map(
+            sum.ptr<double>(), h, w);
         for (size_t k = 0; k < grids.size(); ++k) {
             if (grids[k].rows != h || grids[k].cols != w) continue;
-            for (int r = 0; r < h; ++r)
-                for (int c = 0; c < w; ++c)
-                    sum.at<double>(r, c) += weights[k] * static_cast<double>(grids[k].at<uchar>(r, c));
+            Eigen::Map<const Eigen::Matrix<uchar, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> g_map(
+                grids[k].ptr<uchar>(), h, w);
+            sum_map += weights[k] * g_map.cast<double>();
         }
         cv::Mat out(h, w, CV_8UC1);
-        for (int r = 0; r < h; ++r)
-            for (int c = 0; c < w; ++c)
-                out.at<uchar>(r, c) = sum.at<double>(r, c) >= 127.5 ? 255 : 0;
+        const double* sum_ptr = sum.ptr<double>();
+        uchar* out_ptr = out.ptr<uchar>();
+        for (int i = 0; i < h * w; ++i)
+            out_ptr[i] = sum_ptr[i] >= 127.5 ? 255 : 0;
         return out;
     }
 
-    /** Convert AgentCenteredInput occ_0..occ_4 (float32, 0/1) to cv::Mat 201x201 (0/255). Only includes grids with size 201*201. */
     static std::vector<cv::Mat> agentCenteredInputToMats(const path_planning::msg::AgentCenteredInput& msg) {
         const int sz = OccGridBridge::EGO_GRID_SIZE;
         const size_t n = static_cast<size_t>(sz * sz);
@@ -278,13 +271,17 @@ private:
         for (int i = 0; i < 5; ++i) {
             if (occs[i]->size() != n) continue;
             cv::Mat m(sz, sz, CV_8UC1);
-            for (int r = 0; r < sz; ++r)
+            const float* p = occs[i]->data();
+            for (int r = 0; r < sz; ++r) {
+                uchar* row = m.ptr<uchar>(r);
                 for (int c = 0; c < sz; ++c)
-                    m.at<uchar>(r, c) = (*occs[i])[static_cast<size_t>(r * sz + c)] > 0.5f ? 255 : 0;
+                    row[c] = p[static_cast<size_t>(r * sz + c)] > 0.5f ? 255 : 0;
+            }
             out.push_back(m);
         }
         return out;
     }
+
     static cv::Mat occupancyGridToMat(const nav_msgs::msg::OccupancyGrid& msg, double threshold) {
         int w = static_cast<int>(msg.info.width);
         int h = static_cast<int>(msg.info.height);
@@ -292,30 +289,21 @@ private:
         cv::Mat m(h, w, CV_8UC1);
         for (int i = 0; i < h * w; ++i) {
             int8_t v = msg.data[i];
-            // Handle model output (0-99 range) and standard occupancy values
             if (v >= 0 && v < 100) {
-                // Model output in 0-99 range: scale to 0-255
-                // Apply threshold (0-99 scale) to determine occupancy
-                double threshold_99 = threshold * 99.0;  // Scale threshold to 0-99 range
-                if (v >= threshold_99) {
-                    // Above threshold: scale occupancy value to 0-255 (0=free, 255=full obstacle)
+                double threshold_99 = threshold * 99.0;
+                if (v >= threshold_99)
                     m.at<uchar>(i / w, i % w) = static_cast<uchar>((v * 255) / 99);
-                } else {
-                    // Below threshold: treat as free space
+                else
                     m.at<uchar>(i / w, i % w) = 0;
-                }
             } else if (v == 100) {
-                // Standard occupancy grid 100 = full obstacle
                 m.at<uchar>(i / w, i % w) = 255;
             } else {
-                // Negative values (unknown) treated as free
                 m.at<uchar>(i / w, i % w) = 0;
             }
         }
         return m;
     }
 
-    /** Publish a single cv::Mat as OccupancyGrid (0/255 -> 0/100). */
     void publishOccupancyGrid(const cv::Mat& grid, const std::string& frame_id = "map",
                              double origin_x = 0, double origin_y = 0, double resolution = 0.05) {
         if (grid.empty()) return;
@@ -336,7 +324,6 @@ private:
         pub_occ_grid_->publish(occ_msg);
     }
 
-    /** Crop full map using sample_* bounds and center on 1216x1216 canvas (unoccupied = 0). */
     cv::Mat cropMapAndCenterOnCanvas(const cv::Mat& full_grid,
                                      int sample_col_min, int sample_col_max,
                                      int sample_row_min, int sample_row_max) const {
@@ -358,40 +345,6 @@ private:
         return canvas;
     }
 
-    /** Overlay the crop region from a 1216x1216 canvas onto the full map at sample_* position. */
-    void overlayCanvasCropOntoMap(const cv::Mat& canvas_1216,
-                                  int sample_col_min, int sample_col_max,
-                                  int sample_row_min, int sample_row_max,
-                                  cv::Mat& map_out) const {
-        const int w = bridge_.gridWidth();
-        const int h = bridge_.gridHeight();
-        if (canvas_1216.empty() || canvas_1216.cols != MAP_FRAME_CANVAS_SIZE ||
-            canvas_1216.rows != MAP_FRAME_CANVAS_SIZE || map_out.empty() ||
-            map_out.cols != w || map_out.rows != h)
-            return;
-        int sc_min = (sample_col_min >= 0) ? std::max(0, sample_col_min) : 0;
-        int sc_max = (sample_col_max >= 0) ? std::min(w - 1, sample_col_max) : w - 1;
-        int sr_min = (sample_row_min >= 0) ? std::max(0, sample_row_min) : 0;
-        int sr_max = (sample_row_max >= 0) ? std::min(h - 1, sample_row_max) : h - 1;
-        if (sc_min > sc_max || sr_min > sr_max) return;
-        const int crop_w = std::min(sc_max - sc_min + 1, MAP_FRAME_CANVAS_SIZE);
-        const int crop_h = std::min(sr_max - sr_min + 1, MAP_FRAME_CANVAS_SIZE);
-        const int cx = (MAP_FRAME_CANVAS_SIZE - crop_w) / 2;
-        const int cy = (MAP_FRAME_CANVAS_SIZE - crop_h) / 2;
-        for (int r = 0; r < crop_h; ++r)
-            for (int c = 0; c < crop_w; ++c) {
-                uchar v = canvas_1216.at<uchar>(cy + r, cx + c);
-                if (v > 0) {
-                    int mr = sr_min + r;
-                    int mc = sc_min + c;
-                    if (mr >= 0 && mr < h && mc >= 0 && mc < w)
-                        map_out.at<uchar>(mr, mc) = 255;
-                }
-            }
-    }
-
-    /** Cookie-cutter: zero out the sample_* ROI on the map, then paste the crop from the
-     * 1216x1216 canvas into that hole. Planning then uses only the predictions in the ROI. */
     void cookieCutterCanvasCropOntoMap(const cv::Mat& canvas_1216,
                                       int sample_col_min, int sample_col_max,
                                       int sample_row_min, int sample_row_max,
@@ -423,38 +376,6 @@ private:
             }
     }
 
-    /** Build OccupancyGridArray from queue of cv::Mat grids (map frame).
-     * Each grid is expected to be MAP_FRAME_CANVAS_SIZE x MAP_FRAME_CANVAS_SIZE (1216x1216).
-     * Origin/resolution are set for canvas (0,0 and bridge resolution).
-     */
-    path_planning::msg::OccupancyGridArray toOccupancyGridArrayMapFrame(
-        const std::deque<cv::Mat>& queue) const {
-        path_planning::msg::OccupancyGridArray arr;
-        arr.header.frame_id = "map";
-        arr.header.stamp = now();
-        const int canvas_sz = MAP_FRAME_CANVAS_SIZE;
-        const float res = static_cast<float>(bridge_.resolution());
-        for (const cv::Mat& g : queue) {
-            if (g.empty() || g.cols != canvas_sz || g.rows != canvas_sz) continue;
-            nav_msgs::msg::OccupancyGrid og;
-            og.header = arr.header;
-            og.info.resolution = res;
-            og.info.width = canvas_sz;
-            og.info.height = canvas_sz;
-            og.info.origin.position.x = 0.0;
-            og.info.origin.position.y = 0.0;
-            og.info.origin.position.z = 0.0;
-            og.info.origin.orientation.w = 1.0;
-            og.data.resize(static_cast<size_t>(canvas_sz * canvas_sz));
-            for (int r = 0; r < canvas_sz; ++r)
-                for (int c = 0; c < canvas_sz; ++c)
-                    og.data[static_cast<size_t>(r * canvas_sz + c)] = g.at<uchar>(r, c) ? 100 : 0;
-            arr.grids.push_back(og);
-        }
-        return arr;
-    }
-
-    /** Build AgentCenteredInput for map_frame: mode=0, occ_0..occ_4 each 1216x1216 binary (0/1), deltas/motion empty. */
     path_planning::msg::AgentCenteredInput toAgentCenteredInputMapFrame(const std::deque<cv::Mat>& queue) const {
         path_planning::msg::AgentCenteredInput msg;
         msg.header.frame_id = "map";
@@ -468,97 +389,16 @@ private:
             if (g.empty() || g.cols != sz || g.rows != sz) continue;
             std::vector<float>* occ[] = {&msg.occ_0, &msg.occ_1, &msg.occ_2, &msg.occ_3, &msg.occ_4};
             occ[i]->resize(n);
-            for (int r = 0; r < sz; ++r)
+            float* dst = occ[i]->data();
+            for (int r = 0; r < sz; ++r) {
+                const uchar* row = g.ptr<uchar>(r);
                 for (int c = 0; c < sz; ++c)
-                    (*occ[i])[static_cast<size_t>(r * sz + c)] = g.at<uchar>(r, c) ? 1.f : 0.f;
+                    dst[static_cast<size_t>(r * sz + c)] = row[c] ? 1.f : 0.f;
+            }
         }
         return msg;
     }
 
-    /** Build OccupancyGridArray from queue of 201x201 ego grids (agent-centered: 5 frames).
-     * Now matches save_frame training: 10 grids = occ_0, delta_0, occ_1, delta_1, ..., occ_4, delta_4
-     * (delta_0 = zeros). Delta encoded as 0-100: 0=-1, 50=0, 100=+1.
-     * Plus motion_forward_speed and motion_yaw_rate (length 5; first element 0).
-     */
-    path_planning::msg::OccupancyGridArray toOccupancyGridArrayEgo(
-        const std::deque<EgoFrame>& queue) const {
-        path_planning::msg::OccupancyGridArray arr;
-        arr.header.frame_id = "map";
-        arr.header.stamp = now();
-        const double res = OccGridBridge::egoGridResolution();
-        const double ox = OccGridBridge::egoGridOriginX();
-        const double oy = OccGridBridge::egoGridOriginY();
-        const int sz = OccGridBridge::EGO_GRID_SIZE;
-
-        if (queue.size() != 5u) return arr;
-
-        auto pushGrid = [&](const cv::Mat& g, bool as_occupancy) {
-            nav_msgs::msg::OccupancyGrid og;
-            og.header = arr.header;
-            og.info.resolution = static_cast<float>(res);
-            og.info.width = sz;
-            og.info.height = sz;
-            og.info.origin.position.x = ox;
-            og.info.origin.position.y = oy;
-            og.info.origin.position.z = 0.0;
-            og.info.origin.orientation.w = 1.0;
-            og.data.resize(static_cast<size_t>(sz * sz));
-            for (int r = 0; r < sz; ++r)
-                for (int c = 0; c < sz; ++c) {
-                    int v = as_occupancy ? (g.at<uchar>(r, c) ? 100 : 0) : static_cast<int>(g.at<uchar>(r, c));
-                    og.data[static_cast<size_t>(r * sz + c)] = static_cast<int8_t>(std::max(0, std::min(100, v)));
-                }
-            arr.grids.push_back(og);
-        };
-
-        std::vector<cv::Mat> occ_float(5);
-        for (size_t i = 0; i < 5u; ++i) {
-            occ_float[i] = cv::Mat(sz, sz, CV_32FC1);
-            for (int r = 0; r < sz; ++r)
-                for (int c = 0; c < sz; ++c)
-                    occ_float[i].at<float>(r, c) = queue[i].grid.at<uchar>(r, c) ? 1.f : 0.f;
-        }
-
-        for (size_t i = 0; i < 5u; ++i) {
-            pushGrid(queue[i].grid, true);
-            cv::Mat delta_enc(sz, sz, CV_8UC1);
-            if (i == 0) {
-                delta_enc.setTo(50);
-            } else {
-                for (int r = 0; r < sz; ++r)
-                    for (int c = 0; c < sz; ++c) {
-                        float d = occ_float[i].at<float>(r, c) - occ_float[i - 1].at<float>(r, c);
-                        int v = static_cast<int>(std::round((d + 1.f) * 50.f));
-                        delta_enc.at<uchar>(r, c) = static_cast<uchar>(std::max(0, std::min(100, v)));
-                    }
-            }
-            pushGrid(delta_enc, false);
-        }
-
-        arr.motion_forward_speed.resize(5);
-        arr.motion_yaw_rate.resize(5);
-        arr.motion_forward_speed[0] = 0.f;
-        arr.motion_yaw_rate[0] = 0.f;
-        for (size_t j = 1; j < 5u; ++j) {
-            const EgoFrame& curr = queue[j];
-            const EgoFrame& prev = queue[j - 1];
-            double dt = (curr.time - prev.time).seconds();
-            if (dt < 1e-6) dt = 1e-6;
-            double dx = curr.x - prev.x;
-            double dy = curr.y - prev.y;
-            double cy = std::cos(curr.yaw);
-            double sy = std::sin(curr.yaw);
-            double body_x = cy * dx + sy * dy;
-            double dyaw = curr.yaw - prev.yaw;
-            while (dyaw > 3.141592653589793) dyaw -= 2.0 * 3.141592653589793;
-            while (dyaw < -3.141592653589793) dyaw += 2.0 * 3.141592653589793;
-            arr.motion_forward_speed[j] = static_cast<float>(body_x / dt);
-            arr.motion_yaw_rate[j] = static_cast<float>(dyaw / dt);
-        }
-        return arr;
-    }
-
-    /** Build AgentCenteredInput: 10 binary 201x201 grids (0 or 1) + motion. No nav_msgs. */
     path_planning::msg::AgentCenteredInput toAgentCenteredInput(const std::deque<EgoFrame>& queue) const {
         path_planning::msg::AgentCenteredInput msg;
         msg.header.frame_id = "map";
@@ -570,30 +410,31 @@ private:
         if (queue.size() != 5u) return msg;
 
         msg.occ_0.resize(n); msg.occ_1.resize(n); msg.occ_2.resize(n); msg.occ_3.resize(n); msg.occ_4.resize(n);
-        for (int r = 0; r < sz; ++r)
-            for (int c = 0; c < sz; ++c) {
-                size_t idx = static_cast<size_t>(r * sz + c);
-                msg.occ_0[idx] = queue[0].grid.at<uchar>(r, c) ? 1.f : 0.f;
-                msg.occ_1[idx] = queue[1].grid.at<uchar>(r, c) ? 1.f : 0.f;
-                msg.occ_2[idx] = queue[2].grid.at<uchar>(r, c) ? 1.f : 0.f;
-                msg.occ_3[idx] = queue[3].grid.at<uchar>(r, c) ? 1.f : 0.f;
-                msg.occ_4[idx] = queue[4].grid.at<uchar>(r, c) ? 1.f : 0.f;
-            }
         msg.delta_0.assign(n, 0.f);
         msg.delta_1.resize(n); msg.delta_2.resize(n); msg.delta_3.resize(n); msg.delta_4.resize(n);
-        for (int r = 0; r < sz; ++r)
+
+        for (int r = 0; r < sz; ++r) {
+            const uchar* p0 = queue[0].grid.ptr<uchar>(r);
+            const uchar* p1 = queue[1].grid.ptr<uchar>(r);
+            const uchar* p2 = queue[2].grid.ptr<uchar>(r);
+            const uchar* p3 = queue[3].grid.ptr<uchar>(r);
+            const uchar* p4 = queue[4].grid.ptr<uchar>(r);
+            float* o0 = msg.occ_0.data() + static_cast<size_t>(r) * sz;
+            float* o1 = msg.occ_1.data() + static_cast<size_t>(r) * sz;
+            float* o2 = msg.occ_2.data() + static_cast<size_t>(r) * sz;
+            float* o3 = msg.occ_3.data() + static_cast<size_t>(r) * sz;
+            float* o4 = msg.occ_4.data() + static_cast<size_t>(r) * sz;
+            float* d1 = msg.delta_1.data() + static_cast<size_t>(r) * sz;
+            float* d2 = msg.delta_2.data() + static_cast<size_t>(r) * sz;
+            float* d3 = msg.delta_3.data() + static_cast<size_t>(r) * sz;
+            float* d4 = msg.delta_4.data() + static_cast<size_t>(r) * sz;
             for (int c = 0; c < sz; ++c) {
-                size_t idx = static_cast<size_t>(r * sz + c);
-                float o0 = queue[0].grid.at<uchar>(r, c) ? 1.f : 0.f;
-                float o1 = queue[1].grid.at<uchar>(r, c) ? 1.f : 0.f;
-                float o2 = queue[2].grid.at<uchar>(r, c) ? 1.f : 0.f;
-                float o3 = queue[3].grid.at<uchar>(r, c) ? 1.f : 0.f;
-                float o4 = queue[4].grid.at<uchar>(r, c) ? 1.f : 0.f;
-                msg.delta_1[idx] = o1 - o0;
-                msg.delta_2[idx] = o2 - o1;
-                msg.delta_3[idx] = o3 - o2;
-                msg.delta_4[idx] = o4 - o3;
+                float v0 = p0[c] ? 1.f : 0.f, v1 = p1[c] ? 1.f : 0.f, v2 = p2[c] ? 1.f : 0.f;
+                float v3 = p3[c] ? 1.f : 0.f, v4 = p4[c] ? 1.f : 0.f;
+                o0[c] = v0; o1[c] = v1; o2[c] = v2; o3[c] = v3; o4[c] = v4;
+                d1[c] = v1 - v0; d2[c] = v2 - v1; d3[c] = v3 - v2; d4[c] = v4 - v3;
             }
+        }
 
         msg.motion_forward_speed.resize(5);
         msg.motion_yaw_rate.resize(5);
@@ -618,23 +459,15 @@ private:
         return msg;
     }
 
-    /**
-     * Check if current path intersects obstacles in the occupancy grid.
-     * Returns true if intersection found within lookahead_distance along path from robot position.
-     * Path is in world coordinates, grid is occupancy grid (0=free, 255=obstacle).
-     */
     bool pathIntersectsObstacles(const std::vector<std::array<double, 2>>& path_world,
                                  double robot_x, double robot_y,
                                  const cv::Mat& occupancy_grid,
                                  double lookahead_distance) const {
         if (path_world.empty()) return false;
-
         const double resolution = bridge_.resolution();
         double cumulative_dist = 0.0;
-
         const Eigen::Vector2d robot(robot_x, robot_y);
 
-        // Find closest point on path to robot (start checking from there)
         size_t start_idx = 0;
         double min_dist_sq = 1e30;
         for (size_t i = 0; i < path_world.size(); ++i) {
@@ -646,7 +479,6 @@ private:
             }
         }
 
-        // Check path segments starting from closest point
         for (size_t i = start_idx; i + 1 < path_world.size(); ++i) {
             Eigen::Vector2d p0(path_world[i][0], path_world[i][1]);
             Eigen::Vector2d p1(path_world[i + 1][0], path_world[i + 1][1]);
@@ -657,7 +489,6 @@ private:
             } else {
                 cumulative_dist = (p0 - robot).norm();
             }
-
             if (cumulative_dist > lookahead_distance) break;
 
             int col0, row0, col1, row1;
@@ -669,7 +500,6 @@ private:
                 double t = static_cast<double>(j) / num_samples;
                 int col = static_cast<int>(col0 + t * (col1 - col0));
                 int row = static_cast<int>(row0 + t * (row1 - row0));
-
                 if (col >= 0 && col < occupancy_grid.cols && row >= 0 && row < occupancy_grid.rows) {
                     if (occupancy_grid.at<uchar>(row, col) != 0) return true;
                 }
@@ -683,26 +513,33 @@ private:
         double tx, double ty, double tz,
         double roll, double pitch, double yaw) const {
         if (points_lidar.empty()) return {};
-        std::vector<std::array<float, 3>> out;
-        out.reserve(points_lidar.size());
+        const size_t n = points_lidar.size();
 
-        // Rotation matrix R = Rz(yaw) * Ry(pitch) * Rx(roll) using Eigen
         Eigen::AngleAxisd roll_angle(roll, Eigen::Vector3d::UnitX());
         Eigen::AngleAxisd pitch_angle(pitch, Eigen::Vector3d::UnitY());
         Eigen::AngleAxisd yaw_angle(yaw, Eigen::Vector3d::UnitZ());
         Eigen::Matrix3d R = (yaw_angle * pitch_angle * roll_angle).toRotationMatrix();
         Eigen::Vector3d t(tx, ty, tz);
 
-        for (const auto& pt : points_lidar) {
-            Eigen::Vector3d p(static_cast<double>(pt[0]), static_cast<double>(pt[1]), static_cast<double>(pt[2]));
-            Eigen::Vector3d p_m = R * p + t;
-            out.push_back({{static_cast<float>(p_m.x()), static_cast<float>(p_m.y()), static_cast<float>(p_m.z())}});
+        Eigen::Matrix3Xd P(3, n);
+        for (size_t i = 0; i < n; ++i) {
+            P(0, i) = static_cast<double>(points_lidar[i][0]);
+            P(1, i) = static_cast<double>(points_lidar[i][1]);
+            P(2, i) = static_cast<double>(points_lidar[i][2]);
         }
+        Eigen::Matrix3Xd P_map = (R * P).colwise() + t;
+
+        std::vector<std::array<float, 3>> out;
+        out.reserve(n);
+        for (size_t i = 0; i < n; ++i)
+            out.push_back({{static_cast<float>(P_map(0, i)), static_cast<float>(P_map(1, i)), static_cast<float>(P_map(2, i))}});
         return out;
     }
 
     void runPlanningCycle() {
         if (!bridge_.isInitialized()) return;
+
+        auto t_cycle_start = std::chrono::high_resolution_clock::now();
 
         std::vector<std::array<float, 3>> live_pts;
         double start_x, start_y, goal_x, goal_y;
@@ -713,7 +550,7 @@ private:
         path_planning::msg::AgentCenteredInput::SharedPtr predicted_agent_msg;
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            live_pts = live_points_;
+            live_points_staging_.swap(live_points_);
             start_x = start_x_;
             start_y = start_y_;
             start_z = start_z_;
@@ -728,6 +565,9 @@ private:
             predicted_msg = last_predicted_array_;
             predicted_agent_msg = last_predicted_agent_;
         }
+        live_pts = std::move(live_points_staging_);
+
+        auto t_after_swap = std::chrono::high_resolution_clock::now();
 
         std::string mode = get_parameter("occ_data_mode").as_string();
         double z_min = get_parameter("z_min").as_double();
@@ -739,6 +579,8 @@ private:
         } else {
             live_pts.clear();
         }
+
+        auto t_after_transform = std::chrono::high_resolution_clock::now();
 
         cv::Mat combined;
         if (mode == "live") {
@@ -795,8 +637,10 @@ private:
             }
         } else if (mode == "agent_centered_model") {
             if (have_pose) {
+                auto t_before_ego = std::chrono::high_resolution_clock::now();
                 cv::Mat ego_grid = OccGridBridge::pointcloudToEgoOccupancyGrid201(
                     live_pts, start_x, start_y, start_yaw, z_min, z_max);
+                auto t_after_ego = std::chrono::high_resolution_clock::now();
                 EgoFrame frame;
                 frame.grid = ego_grid;
                 frame.x = start_x;
@@ -816,16 +660,27 @@ private:
                 if (pub_model_input_ && queue_ego_frames_.size() == required_queue) {
                     std::deque<EgoFrame> q_full;
                     { std::lock_guard<std::mutex> lock(mutex_); q_full = queue_ego_frames_; }
-                    // Sample 5 frames at stride intervals: indices 0, stride, 2*stride, 3*stride, 4*stride
                     std::deque<EgoFrame> q_strided;
                     for (int s = 0; s < 5; ++s)
                         q_strided.push_back(q_full[static_cast<size_t>(s * std::max(1, stride))]);
+                    auto t_before_to_msg = std::chrono::high_resolution_clock::now();
                     path_planning::msg::AgentCenteredInput msg = toAgentCenteredInput(q_strided);
+                    auto t_after_to_msg = std::chrono::high_resolution_clock::now();
                     pub_model_input_->publish(msg);
+                    auto t_after_publish = std::chrono::high_resolution_clock::now();
+                    using Ms = std::chrono::duration<double, std::milli>;
+                    double ms_swap = std::chrono::duration_cast<Ms>(t_after_swap - t_cycle_start).count();
+                    double ms_tf = std::chrono::duration_cast<Ms>(t_after_transform - t_after_swap).count();
+                    double ms_ego = std::chrono::duration_cast<Ms>(t_after_ego - t_before_ego).count();
+                    double ms_to_msg = std::chrono::duration_cast<Ms>(t_after_to_msg - t_before_to_msg).count();
+                    double ms_pub = std::chrono::duration_cast<Ms>(t_after_publish - t_after_to_msg).count();
+                    double ms_total = std::chrono::duration_cast<Ms>(t_after_publish - t_cycle_start).count();
+                    RCLCPP_INFO(get_logger(),
+                        "[agent_centered] swap=%.1fms transform=%.1fms ego_grid=%.1fms to_msg=%.1fms publish=%.1fms | total=%.1fms",
+                        ms_swap, ms_tf, ms_ego, ms_to_msg, ms_pub, ms_total);
                 }
             }
             combined = bridge_.mergeWithStaticMap(cv::Mat::zeros(bridge_.gridHeight(), bridge_.gridWidth(), CV_8UC1));
-            // Vanilla map is left untouched; only model predictions (from live scans) are overlaid on top.
             if (predicted_agent_msg) {
                 std::vector<cv::Mat> grids = agentCenteredInputToMats(*predicted_agent_msg);
                 if (!grids.empty()) {
@@ -849,14 +704,10 @@ private:
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
             "Combined grid: %d x %d (mode=%s)", combined.cols, combined.rows, mode.c_str());
 
-        // Publish current combined occupancy grid for visualization
         publishOccupancyGrid(combined, "map", bridge_.xMin(), bridge_.yMin(), bridge_.resolution());
 
-        if (!have_pose || !have_goal) {
-            return;
-        }
+        if (!have_pose || !have_goal) return;
 
-        // Check if current path intersects obstacles within lookahead distance
         bool needs_replan = current_path.empty();
         if (!needs_replan) {
             double lookahead = get_parameter("replan_lookahead_distance").as_double();
@@ -865,31 +716,24 @@ private:
                 RCLCPP_INFO(get_logger(), "Path intersects obstacles within %.2f m, replanning...", lookahead);
             }
         }
-        // Force replan periodically (e.g. when manually driving so path drifts from robot)
         if (!needs_replan) {
             double interval_sec = get_parameter("replan_interval_sec").as_double();
             if (interval_sec > 0.0) {
                 double elapsed = (now() - last_plan_time_).seconds();
                 if (last_plan_time_.nanoseconds() == 0 || elapsed >= interval_sec) {
                     needs_replan = true;
-                    RCLCPP_DEBUG(get_logger(), "Replan clock (%.1f s interval): replanning.", interval_sec);
                 }
             }
         }
 
-        // Only plan if we need a new path
-        if (!needs_replan) {
-            return;  // Current path is still valid
-        }
+        if (!needs_replan) return;
 
-        // RRT expects 0=free, 255=obstacle (same as our combined)
-        // Convert meters to pixels using grid resolution
         double resolution = bridge_.resolution();
         double robot_radius_m = get_parameter("robot_radius").as_double();
         int robot_radius_px = static_cast<int>(std::round(robot_radius_m / resolution));
         int n_iter = get_parameter("rrt_iterations").as_int();
         double step_size_m = get_parameter("step_size").as_double();
-        double step_size_px = step_size_m / resolution;  // Convert meters to pixels
+        double step_size_px = step_size_m / resolution;
         double goal_rate = get_parameter("rrt_goal_sample_rate").as_double();
         int sample_col_min = get_parameter("sample_col_min").as_int();
         int sample_col_max = get_parameter("sample_col_max").as_int();
@@ -930,9 +774,7 @@ private:
                 std::istringstream ss(s);
                 std::string token;
                 while (std::getline(ss, token, ',') && ps.size() < 4) {
-                    try {
-                        ps.push_back(std::stod(token));
-                    } catch (...) { break; }
+                    try { ps.push_back(std::stod(token)); } catch (...) { break; }
                 }
             }
             double beta_v = (ps.size() > 0) ? ps[0] : 0.1;
@@ -949,13 +791,12 @@ private:
         }
 
         if (path_idx.empty()) {
-            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
-                "%s found no path.",
+            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "%s found no path.",
                 (planner_type == "astar" || planner_type == "astar_energy") ? "A*" : "RRT");
             return;
         }
 
-        WaypointArray waypoints = std::vector<std::array<double, 2>>();
+        WaypointArray waypoints;
         for (const auto& pt : path_idx) {
             double x, y;
             bridge_.gridToWorld(pt.x, pt.y, x, y);
@@ -977,14 +818,12 @@ private:
         pub_path_->publish(path_msg);
         pub_waypoints_->publish(path_msg);
 
-        // Store current path for future intersection checks
         {
             std::lock_guard<std::mutex> lock(mutex_);
             current_path_ = waypoints;
         }
 
         last_plan_time_ = now();
-
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Published %zu waypoints.", waypoints.size());
     }
 
@@ -1002,6 +841,7 @@ private:
 
     std::mutex mutex_;
     std::vector<std::array<float, 3>> live_points_;
+    std::vector<std::array<float, 3>> live_points_staging_;
     double start_x_ = 0, start_y_ = 0, goal_x_ = 0, goal_y_ = 0;
     double start_z_ = 0;
     double start_roll_ = 0, start_pitch_ = 0, start_yaw_ = 0;
@@ -1009,7 +849,6 @@ private:
     std::vector<std::array<double, 2>> current_path_;
     rclcpp::Time last_plan_time_{0};
 
-    // Model modes: last predicted messages (map_frame uses OccupancyGridArray; agent_centered uses AgentCenteredInput with occ_* only)
     path_planning::msg::OccupancyGridArray::SharedPtr last_predicted_array_;
     path_planning::msg::AgentCenteredInput::SharedPtr last_predicted_agent_;
     std::deque<cv::Mat> queue_map_frame_;
