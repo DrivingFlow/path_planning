@@ -39,21 +39,22 @@ if __name__ == "__main__":
     # -----------------------------
     yaml_config_path = None  # e.g. r"path/to/plab_4-2_rotated.yaml" to reuse stored config
 
-    pcd_path = r"C:\Users\ianrp\Desktop\Assignments\Fifth\ENPH 479\path_planning\utils\henn_2nd.ply"
+    pcd_path = r"C:\Users\ianrp\Desktop\Assignments\Fifth\ENPH 479\path_planning\utils\nest_1st.ply"
     out_path = r"C:\Users\ianrp\Desktop\Assignments\Fifth\ENPH 479\path_planning\utils"
 
     z_range = [0.05, 1]
     res = 0.05
 
     ground_points = [
-        [6.508989,-1.685972,-0.484069],
-        [7.786612,-10.571002,-0.499509],
-        [10.762177,-19.88037,-0.502807],
-        [27.829384,-16.864285,-0.558646],
-        [49.470066,-13.766926,-0.723056],
-        [67.570442,-11.960052,-0.933147],
-        [66.793861,-0.013486,-0.939066],
-        [65.859177,6.630725,-1.011679]
+        [-23.044216, 13.068424, -0.479652],
+        [-32.863640, 11.996697, -0.551421],
+        [-23.047501, -2.671737, -0.549841],
+        [-13.598282, -9.452674, -0.686022],
+        [ -2.638452, -12.404526, -0.592181],
+        [  4.749834,  0.058084, -0.450179],
+        [  6.516342, -10.529303, -0.455436],
+        [ 27.990547,  1.896125, -0.303476],
+        [ 31.518618, -12.913175, -0.293514]
     ]
 
     if yaml_config_path and os.path.isfile(yaml_config_path):
