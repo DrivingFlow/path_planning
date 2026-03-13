@@ -64,7 +64,7 @@ def generate_launch_description():
             # Maximum z-coordinate for obstacle detection (meters)
             DeclareLaunchArgument("z_max", default_value="1.0"),
             # Robot radius for collision checking (meters)
-            DeclareLaunchArgument("robot_radius", default_value="0.1"),
+            DeclareLaunchArgument("robot_radius", default_value="0.15"),
             # Number of RRT iterations for path planning
             DeclareLaunchArgument("rrt_iterations", default_value="10000"),
             # Step size for RRT tree expansion (meters)
