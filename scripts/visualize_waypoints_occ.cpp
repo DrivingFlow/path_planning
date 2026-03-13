@@ -109,7 +109,8 @@ private:
     bool worldToPixel(const OccData& occ, const cv::Point2d& w, cv::Point& p) const {
         if (occ.width <= 0 || occ.height <= 0 || occ.resolution <= 0.0) return false;
         Eigen::Vector2d world(w.x, w.y);
-        Eigen::Vector2d origin(occ.origin_x, occ.origin_y + occ.height * occ.resolution);
+        // Top-left of cell (0,0): origin is bottom-left, so top = origin_y + (height-1)*res (matches OccGridBridge)
+        Eigen::Vector2d origin(occ.origin_x, occ.origin_y + (occ.height - 1) * occ.resolution);
         Eigen::Vector2d col_row = (world - origin).array() / occ.resolution;
         col_row.y() = -col_row.y();
         int c = static_cast<int>(std::round(col_row.x()));

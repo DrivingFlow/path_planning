@@ -39,22 +39,21 @@ if __name__ == "__main__":
     # -----------------------------
     yaml_config_path = None  # e.g. r"path/to/plab_4-2_rotated.yaml" to reuse stored config
 
-    pcd_path = r"C:\Users\ianrp\Desktop\Assignments\Fifth\ENPH 479\path_planning\utils\nest_1st.ply"
+    pcd_path = r"C:\Users\ianrp\Desktop\Assignments\Fifth\ENPH 479\path_planning\utils\plab_03_07_4.ply"
     out_path = r"C:\Users\ianrp\Desktop\Assignments\Fifth\ENPH 479\path_planning\utils"
 
     z_range = [0.05, 1]
     res = 0.05
 
     ground_points = [
-        [-23.044216, 13.068424, -0.479652],
-        [-32.863640, 11.996697, -0.551421],
-        [-23.047501, -2.671737, -0.549841],
-        [-13.598282, -9.452674, -0.686022],
-        [ -2.638452, -12.404526, -0.592181],
-        [  4.749834,  0.058084, -0.450179],
-        [  6.516342, -10.529303, -0.455436],
-        [ 27.990547,  1.896125, -0.303476],
-        [ 31.518618, -12.913175, -0.293514]
+        [-7.569505, 13.645481, -0.423353],
+        [-13.042581, 10.55048, -0.471645],
+        [-3.540575, 8.516549, -0.445796],
+        [-10.350218, 4.351845, -0.510463],
+        [-0.081621, 3.421459, -0.473557],
+        [-6.05744, -2.392545, -0.547624],
+        [2.44137, -3.62072, -0.520534],
+        [-1.659044, -6.697102, -0.476078]
     ]
 
     if yaml_config_path and os.path.isfile(yaml_config_path):
@@ -110,6 +109,13 @@ if __name__ == "__main__":
     if pcd_o3d.has_normals():
         normals = np.asarray(pcd_o3d.normals)
         pcd_rot.normals = o3d.utility.Vector3dVector((R @ normals.T).T)
+    else:
+        # PLY sources often lack normals. Open3D then writes 12 bytes/point (xyz only),
+        # but the C++ OccGridBridge loader assumes 24 bytes (xyz + normals). Without
+        # dummy normals, the C++ misreads and skips every other point, causing wrong
+        # bounds and ~10+ pixel offset between static map and live scan.
+        n = len(pts_leveled)
+        pcd_rot.normals = o3d.utility.Vector3dVector(np.zeros((n, 3), dtype=np.float64))
 
     o3d.io.write_point_cloud(rotated_cloud_path, pcd_rot)
     print(f"Saved rotated point cloud: {rotated_cloud_path}")
