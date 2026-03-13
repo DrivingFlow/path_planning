@@ -94,7 +94,7 @@ def generate_launch_description():
             # Visualizer type: 'cpp' or 'python'
             DeclareLaunchArgument("visualizer_type", default_value="cpp"),
             # Whether to show energy / clearance map beside binary map in C++ visualizer
-            DeclareLaunchArgument("show_energy_map", default_value="True"),
+            DeclareLaunchArgument("show_energy_map", default_value="False"),
             # Whether to show agent-centered 5 m radius ROI panel in C++ visualizer (independent of energy map)
             DeclareLaunchArgument("show_agent_centered_roi", default_value="False"),
             # Minimum column for visualization view; -1 = full grid width
@@ -120,7 +120,7 @@ def generate_launch_description():
             # A* only: [beta_valley,smooth_alpha,smooth_beta,smooth_n_iter]; RRT ignores
             DeclareLaunchArgument("planner_settings", default_value="0.1,0.2,0.2,30"),
             # Occupancy data source: 'live' | 'map_frame_model' | 'agent_centered_model'
-            DeclareLaunchArgument("occ_data_mode", default_value="agent_centered_model"),
+            DeclareLaunchArgument("occ_data_mode", default_value="live"),
             DeclareLaunchArgument("prediction_temperature", default_value="10000.0"),
             DeclareLaunchArgument("num_predicted_frames", default_value="5"),
             # Threshold for binarizing analog model output values (0-1 range) before scaling to 0-255
