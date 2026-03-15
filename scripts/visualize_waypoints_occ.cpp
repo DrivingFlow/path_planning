@@ -11,6 +11,11 @@
 #include <mutex>
 #include <vector>
 #include <optional>
+#include <cmath>
+
+enum class ViewMode { FULL, ROI, FOLLOW };
+
+static constexpr int DRAG_THRESHOLD_PX = 5;
 
 struct OccData {
     int width = 0;
@@ -37,6 +42,7 @@ public:
         view_row_max_ = declare_parameter<int>("view_row_max", -1);
         show_energy_map_ = declare_parameter<bool>("show_energy_map", true);
         show_agent_centered_roi_ = declare_parameter<bool>("show_agent_centered_roi", true);
+        follow_radius_m_ = declare_parameter<double>("follow_radius_m", 5.0);
         sub_occ_ = create_subscription<nav_msgs::msg::OccupancyGrid>(
             occ_topic, 10, [this](const nav_msgs::msg::OccupancyGrid::SharedPtr msg) {
                 onOcc(msg);
@@ -72,7 +78,8 @@ public:
         cv::namedWindow(window_name_, cv::WINDOW_NORMAL);
         cv::resizeWindow(window_name_, 900, 900);
         cv::setMouseCallback(window_name_, &WaypointsOccVisualizer::onMouse, this);
-        RCLCPP_INFO(get_logger(), "Left-click on the visualization window to set a goal!");
+        RCLCPP_INFO(get_logger(),
+            "Click=drag region to zoom | R=reset full view | F=toggle follow robot | Left-click=set goal");
     }
 
 private:
@@ -129,17 +136,59 @@ private:
 
     static void onMouse(int event, int x, int y, int, void* userdata) {
         auto* self = static_cast<WaypointsOccVisualizer*>(userdata);
-        
+        std::lock_guard<std::mutex> lock(self->mouse_mutex_);
+
         if (event == cv::EVENT_LBUTTONDOWN) {
-            std::lock_guard<std::mutex> lock(self->mouse_mutex_);
-            self->click_x_ = x;
-            self->click_y_ = y;
-            self->has_click_ = true;
+            self->drag_start_x_ = x;
+            self->drag_start_y_ = y;
+            self->drag_end_x_ = x;
+            self->drag_end_y_ = y;
+            self->is_dragging_ = true;
             return;
         }
-        
+
+        if (event == cv::EVENT_LBUTTONUP) {
+            if (self->is_dragging_) {
+                int dx = x - self->drag_start_x_;
+                int dy = y - self->drag_start_y_;
+                int dist_sq = dx * dx + dy * dy;
+                if (dist_sq >= DRAG_THRESHOLD_PX * DRAG_THRESHOLD_PX) {
+                    // Drag: zoom to selected region (must be in first panel)
+                    int pw = self->last_occ_panel_width_;
+                    int ph = self->last_occ_panel_height_;
+                    if (pw > 0 && ph > 0 &&
+                        self->drag_start_x_ >= 0 && self->drag_start_x_ < pw &&
+                        self->drag_start_y_ >= 0 && self->drag_start_y_ < ph &&
+                        x >= 0 && x < pw && y >= 0 && y < ph) {
+                        int x0 = std::min(self->drag_start_x_, x);
+                        int x1 = std::max(self->drag_start_x_, x);
+                        int y0 = std::min(self->drag_start_y_, y);
+                        int y1 = std::max(self->drag_start_y_, y);
+                        int w = std::max(2, x1 - x0);
+                        int h = std::max(2, y1 - y0);
+                        self->view_col_min_ = self->last_col_min_ + x0;
+                        self->view_row_min_ = self->last_row_min_ + y0;
+                        self->view_col_max_ = self->last_col_min_ + x0 + w - 1;
+                        self->view_row_max_ = self->last_row_min_ + y0 + h - 1;
+                        self->view_mode_ = ViewMode::ROI;
+                        self->follow_robot_ = false;
+                    }
+                } else {
+                    // Short press: treat as goal click
+                    self->click_x_ = self->drag_start_x_;
+                    self->click_y_ = self->drag_start_y_;
+                    self->has_click_ = true;
+                }
+            }
+            self->is_dragging_ = false;
+            return;
+        }
+
         if (event == cv::EVENT_MOUSEMOVE) {
-            std::lock_guard<std::mutex> lock(self->mouse_mutex_);
+            if (self->is_dragging_) {
+                self->drag_end_x_ = x;
+                self->drag_end_y_ = y;
+            }
             self->mouse_x_ = x;
             self->mouse_y_ = y;
             self->has_mouse_ = true;
@@ -175,21 +224,19 @@ private:
         }
 
         cv::Mat img(occ.height, occ.width, CV_8UC1);
+        const int8_t* src = occ.data.data();
         for (int r = 0; r < occ.height; ++r) {
+            uchar* dst = img.ptr<uchar>(r);
             for (int c = 0; c < occ.width; ++c) {
-                int idx = r * occ.width + c;
-                int8_t val = occ.data[idx];
+                int8_t val = src[r * occ.width + c];
                 if (val < 0) {
-                    img.at<uchar>(r, c) = 127;
+                    dst[c] = 127;
                 } else if (val <= 100) {
-                    // Model output in 0-99 range or standard occupancy (0-100)
-                    // Map 0-99/100 to 0-255 grayscale (inverted: 0=white/free, high=black/obstacle)
                     int v = 100 - val;
                     v = std::max(0, std::min(100, v));
-                    img.at<uchar>(r, c) = static_cast<uchar>(v * 255 / 100);
+                    dst[c] = static_cast<uchar>(v * 255 / 100);
                 } else {
-                    // Values > 100 shouldn't occur, treat as obstacle
-                    img.at<uchar>(r, c) = 0;
+                    dst[c] = 0;
                 }
             }
         }
@@ -202,24 +249,13 @@ private:
         cv::Mat energy_color;
         if (show_energy_map_) {
             cv::Mat binary_inv(occ.height, occ.width, CV_8UC1);
+            const int8_t* src = occ.data.data();
             for (int r = 0; r < occ.height; ++r) {
+                uchar* dst = binary_inv.ptr<uchar>(r);
                 for (int c = 0; c < occ.width; ++c) {
-                    int idx = r * occ.width + c;
-                    int8_t val = occ.data[idx];
-                    bool free_cell;
-                    if (val < 0) {
-                        // Unknown/default cells treated as obstacles
-                        free_cell = false;
-                    } else if (val >= 0 && val <= 100) {
-                        // Model output (0-99) or standard occupancy grid (0-100)
-                        // 0 = free, values > threshold are obstacles
-                        // Use a threshold (e.g., 50 for 0-99 range)
-                        free_cell = (val < 50);
-                    } else {
-                        // Values > 100 treated as obstacles
-                        free_cell = false;
-                    }
-                    binary_inv.at<uchar>(r, c) = free_cell ? 255 : 0;
+                    int8_t val = src[r * occ.width + c];
+                    bool free_cell = (val >= 0 && val <= 100 && val < 50);
+                    dst[c] = free_cell ? 255 : 0;
                 }
             }
             cv::Mat dist;
@@ -245,10 +281,26 @@ private:
         int col_max = occ.width - 1;
         int row_min = 0;
         int row_max = occ.height - 1;
-        if (view_col_min_ >= 0) col_min = view_col_min_;
-        if (view_col_max_ >= 0) col_max = view_col_max_;
-        if (view_row_min_ >= 0) row_min = view_row_min_;
-        if (view_row_max_ >= 0) row_max = view_row_max_;
+        if (follow_robot_ && robot.has_value()) {
+            double res = occ.resolution;
+            double rx = robot->x, ry = robot->y;
+            double half = follow_radius_m_;
+            double wx_lo = rx - half, wx_hi = rx + half;
+            double wy_lo = ry - half, wy_hi = ry + half;
+            double ox = occ.origin_x, oy = occ.origin_y;
+            int h = occ.height, w = occ.width;
+            col_min = std::max(0, static_cast<int>(std::floor((wx_lo - ox) / res)));
+            col_max = std::min(w - 1, static_cast<int>(std::ceil((wx_hi - ox) / res)));
+            row_min = std::max(0, static_cast<int>(std::floor((oy + (h - 1) * res - wy_hi) / res)));
+            row_max = std::min(h - 1, static_cast<int>(std::ceil((oy + (h - 1) * res - wy_lo) / res)));
+            if (col_max < col_min) std::swap(col_min, col_max);
+            if (row_max < row_min) std::swap(row_min, row_max);
+        } else if (view_mode_ == ViewMode::ROI && view_col_min_ >= 0) {
+            col_min = view_col_min_;
+            col_max = view_col_max_;
+            row_min = view_row_min_;
+            row_max = view_row_max_;
+        }
 
         col_min = std::max(0, std::min(col_min, occ.width - 1));
         col_max = std::max(0, std::min(col_max, occ.width - 1));
@@ -259,6 +311,14 @@ private:
 
         cv::Rect roi(col_min, row_min, col_max - col_min + 1, row_max - row_min + 1);
         cv::Mat view_occ = vis(roi);
+
+        {
+            std::lock_guard<std::mutex> lock(mouse_mutex_);
+            last_col_min_ = col_min;
+            last_row_min_ = row_min;
+            last_occ_panel_width_ = view_occ.cols;
+            last_occ_panel_height_ = view_occ.rows;
+        }
         cv::Mat view_energy;
         if (show_energy_map_ && !energy_color.empty()) {
             view_energy = energy_color(roi);
@@ -365,6 +425,7 @@ private:
                 mouse_y = mouse_y_;
             }
         }
+        std::string mode_str = follow_robot_ ? " [FOLLOW]" : (view_mode_ == ViewMode::ROI ? " [ZOOM]" : "");
         if (mouse_x >= 0 && mouse_y >= 0 &&
             mouse_x < occ_width && mouse_y < occ_height) {
             int col = col_min + mouse_x;
@@ -372,9 +433,23 @@ private:
             double x = occ.origin_x + col * occ.resolution;
             double y = occ.origin_y + (occ.height - 1 - row) * occ.resolution;
             drawLabel(view_occ, "col,row: " + std::to_string(col) + ", " + std::to_string(row) +
-                              "  x,y: " + cv::format("%.2f, %.2f", x, y));
+                              "  x,y: " + cv::format("%.2f, %.2f", x, y) + mode_str);
         } else {
-            drawLabel(view_occ, "col,row: out of bounds");
+            drawLabel(view_occ, "col,row: out of bounds" + mode_str);
+        }
+
+        // Draw drag selection rectangle while dragging
+        {
+            std::lock_guard<std::mutex> lock(mouse_mutex_);
+            if (is_dragging_ && last_occ_panel_width_ > 0 && last_occ_panel_height_ > 0) {
+                int x0 = std::max(0, std::min(drag_start_x_, drag_end_x_));
+                int x1 = std::min(occ_width - 1, std::max(drag_start_x_, drag_end_x_));
+                int y0 = std::max(0, std::min(drag_start_y_, drag_end_y_));
+                int y1 = std::min(occ_height - 1, std::max(drag_start_y_, drag_end_y_));
+                if (x0 < occ_width && y0 < occ_height && x1 >= x0 && y1 >= y0) {
+                    cv::rectangle(view_occ, cv::Point(x0, y0), cv::Point(x1, y1), cv::Scalar(0, 255, 255), 2);
+                }
+            }
         }
 
         // Build single combined view: occupancy on the left, energy map and/or agent-centered ROI as needed
@@ -466,7 +541,18 @@ private:
 
         cv::resizeWindow(window_name_, combined.cols, combined.rows);
         cv::imshow(window_name_, combined);
-        cv::waitKey(1);
+
+        int key = cv::waitKey(1);
+        if (key == 'r' || key == 'R') {
+            view_mode_ = ViewMode::FULL;
+            follow_robot_ = false;
+            view_col_min_ = view_col_max_ = view_row_min_ = view_row_max_ = -1;
+            RCLCPP_INFO(get_logger(), "Reset to full view");
+        } else if (key == 'f' || key == 'F') {
+            follow_robot_ = !follow_robot_;
+            view_mode_ = follow_robot_ ? ViewMode::FOLLOW : view_mode_;
+            RCLCPP_INFO(get_logger(), "Follow robot: %s", follow_robot_ ? "ON" : "OFF");
+        }
     }
 
     std::mutex mutex_;
@@ -491,6 +577,7 @@ private:
     int view_row_max_ = -1;
     bool show_energy_map_ = true;
     bool show_agent_centered_roi_ = false;
+    double follow_radius_m_ = 5.0;
     const std::string window_name_ = "Occupancy grid + waypoints (map frame)";
 
     std::mutex mouse_mutex_;
@@ -500,6 +587,19 @@ private:
     int click_x_ = -1;
     int click_y_ = -1;
     bool has_click_ = false;
+
+    // Click-drag zoom and follow mode
+    ViewMode view_mode_ = ViewMode::FULL;
+    bool follow_robot_ = false;
+    bool is_dragging_ = false;
+    int drag_start_x_ = 0;
+    int drag_start_y_ = 0;
+    int drag_end_x_ = 0;
+    int drag_end_y_ = 0;
+    int last_col_min_ = 0;
+    int last_row_min_ = 0;
+    int last_occ_panel_width_ = 0;
+    int last_occ_panel_height_ = 0;
 };
 
 int main(int argc, char** argv) {
