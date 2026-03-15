@@ -91,7 +91,7 @@ public:
         declare_parameter<std::string>("model_occ_input_topic", "/map_updater/occ_grid_input");
         declare_parameter<std::string>("model_predicted_output_topic", "/map_updater/predicted_grid_output");
         declare_parameter<int>("agent_frame_stride", 5);
-        declare_parameter<int>("plan_interval_ms", 500);
+        declare_parameter<int>("plan_interval_ms", 100);
 
         std::string map_pcd = get_parameter("map_pcd_path").as_string();
         std::string map_png = get_parameter("map_png_path").as_string();
@@ -791,8 +791,26 @@ private:
         }
 
         if (path_idx.empty()) {
-            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "%s found no path.",
+            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "%s found no path. Publishing stop-in-place.",
                 (planner_type == "astar" || planner_type == "astar_energy") ? "A*" : "RRT");
+            // Publish single waypoint at robot position so controller stops in place instead of following stale path.
+            nav_msgs::msg::Path path_msg;
+            path_msg.header.frame_id = "map";
+            path_msg.header.stamp = now();
+            geometry_msgs::msg::PoseStamped pose;
+            pose.header = path_msg.header;
+            pose.pose.position.x = start_x;
+            pose.pose.position.y = start_y;
+            pose.pose.position.z = 0.0;
+            pose.pose.orientation.w = 1.0;
+            path_msg.poses.push_back(pose);
+            pub_path_->publish(path_msg);
+            pub_waypoints_->publish(path_msg);
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                current_path_ = {{{start_x, start_y}}};
+            }
+            last_plan_time_ = now();
             return;
         }
 
