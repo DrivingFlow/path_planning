@@ -170,7 +170,7 @@ private:
     }
 
     void onPointCloud(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
-        auto t_start = std::chrono::high_resolution_clock::now();
+        // auto t_start = std::chrono::high_resolution_clock::now();
         std::lock_guard<std::mutex> lock(mutex_);
         live_points_.clear();
         live_points_.reserve(static_cast<size_t>(msg->width * msg->height));
@@ -191,10 +191,10 @@ private:
             float z = *reinterpret_cast<const float*>(pt + z_off);
             live_points_.push_back({{x, y, z}});
         }
-        auto t_end = std::chrono::high_resolution_clock::now();
-        double ms = std::chrono::duration<double, std::milli>(t_end - t_start).count();
-        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 500,
-            "[onPointCloud] parsed %d pts in %.1f ms", num, ms);
+        // auto t_end = std::chrono::high_resolution_clock::now();
+        // double ms = std::chrono::duration<double, std::milli>(t_end - t_start).count();
+        // RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 500,
+        //     "[onPointCloud] parsed %d pts in %.1f ms", num, ms);
     }
 
     void onPose(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg) {
