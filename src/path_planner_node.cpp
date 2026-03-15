@@ -91,7 +91,7 @@ public:
         declare_parameter<std::string>("model_occ_input_topic", "/map_updater/occ_grid_input");
         declare_parameter<std::string>("model_predicted_output_topic", "/map_updater/predicted_grid_output");
         declare_parameter<int>("agent_frame_stride", 5);
-        declare_parameter<int>("plan_interval_ms", 100);
+        declare_parameter<int>("plan_interval_ms", 500);
 
         std::string map_pcd = get_parameter("map_pcd_path").as_string();
         std::string map_png = get_parameter("map_png_path").as_string();
