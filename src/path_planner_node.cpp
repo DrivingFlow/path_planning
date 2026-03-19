@@ -64,7 +64,7 @@ public:
         declare_parameter<double>("z_min", 0.1);
         declare_parameter<double>("z_max", 2.0);
         // Robot radius in meters (converted to pixels internally for obstacle inflation)
-        declare_parameter<double>("robot_radius", 0.25);
+        declare_parameter<double>("robot_radius", 0.05);
         // Number of RRT* planning iterations (more = better path but slower)
         declare_parameter<int>("rrt_iterations", 10000);
         // RRT* step size in meters (distance to extend tree per iteration, converted to pixels internally)
