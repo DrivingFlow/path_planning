@@ -65,6 +65,8 @@ public:
         declare_parameter<double>("z_max", 2.0);
         // Robot radius in meters (converted to pixels internally for obstacle inflation)
         declare_parameter<double>("robot_radius", 0.05);
+        // Additional half-width (m) to enforce a corridor around the A* centerline.
+        declare_parameter<double>("astar_corridor_half_width", 0.0);
         // Number of RRT* planning iterations (more = better path but slower)
         declare_parameter<int>("rrt_iterations", 10000);
         // RRT* step size in meters (distance to extend tree per iteration, converted to pixels internally)
@@ -320,7 +322,7 @@ private:
         occ_msg.data.resize(static_cast<size_t>(grid.rows * grid.cols));
         for (int r = 0; r < grid.rows; ++r)
             for (int c = 0; c < grid.cols; ++c)
-                occ_msg.data[static_cast<size_t>(r * grid.cols + c)] = grid.at<uchar>(r, c) ? 100 : 0;
+                occ_msg.data[static_cast<size_t>(r * grid.cols + c)] = (grid.at<uchar>(r, c) >= 50) ? 100 : 0;
         pub_occ_grid_->publish(occ_msg);
     }
 
@@ -462,9 +464,22 @@ private:
     bool pathIntersectsObstacles(const std::vector<std::array<double, 2>>& path_world,
                                  double robot_x, double robot_y,
                                  const cv::Mat& occupancy_grid,
-                                 double lookahead_distance) const {
+                                 double lookahead_distance,
+                                 double required_clearance_px) const {
         if (path_world.empty()) return false;
         const double resolution = bridge_.resolution();
+        cv::Mat binary_inv(occupancy_grid.rows, occupancy_grid.cols, CV_8UC1);
+        for (int r = 0; r < occupancy_grid.rows; ++r) {
+            const uchar* src = occupancy_grid.ptr<uchar>(r);
+            uchar* dst = binary_inv.ptr<uchar>(r);
+            for (int c = 0; c < occupancy_grid.cols; ++c) {
+                dst[c] = (src[c] < 50) ? 255 : 0;
+            }
+        }
+        cv::Mat dist;
+        cv::distanceTransform(binary_inv, dist, cv::DIST_L2, cv::DIST_MASK_PRECISE);
+        dist.convertTo(dist, CV_64F);
+
         double cumulative_dist = 0.0;
         const Eigen::Vector2d robot(robot_x, robot_y);
 
@@ -501,7 +516,7 @@ private:
                 int col = static_cast<int>(col0 + t * (col1 - col0));
                 int row = static_cast<int>(row0 + t * (row1 - row0));
                 if (col >= 0 && col < occupancy_grid.cols && row >= 0 && row < occupancy_grid.rows) {
-                    if (occupancy_grid.at<uchar>(row, col) != 0) return true;
+                    if (dist.at<double>(row, col) <= required_clearance_px) return true;
                 }
             }
         }
@@ -708,10 +723,24 @@ private:
 
         if (!have_pose || !have_goal) return;
 
+        double resolution = bridge_.resolution();
+        double robot_radius_m = get_parameter("robot_radius").as_double();
+        int robot_radius_px = static_cast<int>(std::round(std::max(0.0, robot_radius_m) / resolution));
+        double astar_corridor_half_width_m = get_parameter("astar_corridor_half_width").as_double();
+        int astar_corridor_half_width_px = static_cast<int>(std::round(
+            std::max(0.0, astar_corridor_half_width_m) / resolution));
+        std::string planner_type = get_parameter("planner").as_string();
+        double required_clearance_px = static_cast<double>(robot_radius_px + astar_corridor_half_width_px);
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
+            "planner=%s robot_radius=%.3f m (%d px), astar_half_width=%.3f m (%d px), required_clearance=%.1f px",
+            planner_type.c_str(), robot_radius_m, robot_radius_px,
+            astar_corridor_half_width_m, astar_corridor_half_width_px, required_clearance_px);
+
         bool needs_replan = current_path.empty();
         if (!needs_replan) {
             double lookahead = get_parameter("replan_lookahead_distance").as_double();
-            needs_replan = pathIntersectsObstacles(current_path, start_x, start_y, combined, lookahead);
+            needs_replan = pathIntersectsObstacles(
+                current_path, start_x, start_y, combined, lookahead, required_clearance_px);
             if (needs_replan) {
                 RCLCPP_INFO(get_logger(), "Path intersects obstacles within %.2f m, replanning...", lookahead);
             }
@@ -728,9 +757,6 @@ private:
 
         if (!needs_replan) return;
 
-        double resolution = bridge_.resolution();
-        double robot_radius_m = get_parameter("robot_radius").as_double();
-        int robot_radius_px = static_cast<int>(std::round(robot_radius_m / resolution));
         int n_iter = get_parameter("rrt_iterations").as_int();
         double step_size_m = get_parameter("step_size").as_double();
         double step_size_px = step_size_m / resolution;
@@ -740,7 +766,6 @@ private:
         int sample_row_min = get_parameter("sample_row_min").as_int();
         int sample_row_max = get_parameter("sample_row_max").as_int();
         bool goal_in_pixels = get_parameter("goal_in_pixels").as_bool();
-        std::string planner_type = get_parameter("planner").as_string();
 
         int start_col, start_row, goal_col, goal_row;
         bridge_.worldToGrid(start_x, start_y, start_col, start_row);
@@ -781,7 +806,8 @@ private:
             double smooth_alpha = (ps.size() > 1) ? ps[1] : 0.1;
             double smooth_beta = (ps.size() > 2) ? ps[2] : 0.2;
             int smooth_n_iter = (ps.size() > 3) ? static_cast<int>(ps[3]) : 50;
-            path_planning::AStarEnergyPlanner planner(combined, robot_radius_px);
+            path_planning::AStarEnergyPlanner planner(
+                combined, robot_radius_px, astar_corridor_half_width_px);
             path_idx = planner.plan(start_g, goal_g, beta_v, smooth_alpha, smooth_beta,
                                     smooth_n_iter, step_size_px);
         } else {

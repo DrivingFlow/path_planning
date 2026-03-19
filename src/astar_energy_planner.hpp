@@ -14,7 +14,9 @@ namespace path_planning {
 class AStarEnergyPlanner {
 public:
     /** grid_img: 0 = free, 255 = obstacle (same as OccGridBridge / RRT). */
-    AStarEnergyPlanner(const cv::Mat& grid_img, int robot_radius_pixels = 5);
+    AStarEnergyPlanner(const cv::Mat& grid_img,
+                       int robot_radius_pixels = 5,
+                       int corridor_half_width_pixels = 0);
 
     /**
      * Plan from start to goal (grid coords: x=col, y=row). Returns path as grid indices.
@@ -31,6 +33,7 @@ public:
 
 private:
     double heuristic(int ax, int ay, int bx, int by) const;
+    bool edgeCorridorFree(int x0, int y0, int x1, int y1) const;
     void buildNeighbors();
     void computeGradient();
     std::vector<cv::Point2f> smoothPath(std::vector<cv::Point2f> path,
@@ -45,6 +48,8 @@ private:
     cv::Mat grad_y_;
     int h_, w_;
     int robot_radius_px_;
+    int corridor_half_width_px_;
+    double required_clearance_px_;
     double max_clearance_;
 
     struct Neighbor {

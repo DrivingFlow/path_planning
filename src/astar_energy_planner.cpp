@@ -7,11 +7,15 @@
 
 namespace path_planning {
 
-AStarEnergyPlanner::AStarEnergyPlanner(const cv::Mat& grid_img, int robot_radius_pixels)
-    : robot_radius_px_(robot_radius_pixels) {
+AStarEnergyPlanner::AStarEnergyPlanner(const cv::Mat& grid_img,
+                                                                             int robot_radius_pixels,
+                                                                             int corridor_half_width_pixels)
+        : robot_radius_px_(std::max(0, robot_radius_pixels)),
+            corridor_half_width_px_(std::max(0, corridor_half_width_pixels)) {
     grid_ = grid_img.clone();
     h_ = grid_.rows;
     w_ = grid_.cols;
+        required_clearance_px_ = static_cast<double>(robot_radius_px_ + corridor_half_width_px_);
 
     // Binary: 0 = obstacle, 255 = free (for distance to nearest obstacle)
     cv::Mat binary_inv(h_, w_, CV_8UC1);
@@ -31,9 +35,9 @@ AStarEnergyPlanner::AStarEnergyPlanner(const cv::Mat& grid_img, int robot_radius
     for (int r = 0; r < h_; ++r) {
         for (int c = 0; c < w_; ++c) {
             double d = dist_.at<double>(r, c);
-            double cl = std::max(d - robot_radius_px_, eps);
+            double cl = std::max(d - required_clearance_px_, eps);
             clearance_.at<double>(r, c) = cl;
-            valid_.at<uchar>(r, c) = (d > robot_radius_px_) ? 255 : 0;
+            valid_.at<uchar>(r, c) = (d > required_clearance_px_) ? 255 : 0;
             if (cl > max_clear) max_clear = cl;
         }
     }
@@ -66,6 +70,22 @@ void AStarEnergyPlanner::buildNeighbors() {
 
 double AStarEnergyPlanner::heuristic(int ax, int ay, int bx, int by) const {
     return std::hypot(static_cast<double>(bx - ax), static_cast<double>(by - ay));
+}
+
+bool AStarEnergyPlanner::edgeCorridorFree(int x0, int y0, int x1, int y1) const {
+    double dx = static_cast<double>(x1 - x0);
+    double dy = static_cast<double>(y1 - y0);
+    double seg_len = std::hypot(dx, dy);
+    int n_samples = std::max(1, static_cast<int>(std::ceil(seg_len / 0.5)));
+
+    for (int i = 0; i <= n_samples; ++i) {
+        double t = static_cast<double>(i) / static_cast<double>(n_samples);
+        int x = static_cast<int>(std::round(static_cast<double>(x0) + t * dx));
+        int y = static_cast<int>(std::round(static_cast<double>(y0) + t * dy));
+        if (x < 0 || x >= w_ || y < 0 || y >= h_) return false;
+        if (dist_.at<double>(y, x) <= required_clearance_px_) return false;
+    }
+    return true;
 }
 
 std::vector<cv::Point2i> AStarEnergyPlanner::plan(const cv::Point2f& start, const cv::Point2f& goal,
@@ -114,6 +134,7 @@ std::vector<cv::Point2i> AStarEnergyPlanner::plan(const cv::Point2f& start, cons
             int ny = cy + n.dy;
             if (nx < 0 || nx >= w_ || ny < 0 || ny >= h_) continue;
             if (valid_.at<uchar>(ny, nx) == 0) continue;
+            if (!edgeCorridorFree(cx, cy, nx, ny)) continue;
 
             double cl = clearance_.at<double>(ny, nx);
             double norm_clear = (max_clearance_ > 0) ? (cl / max_clearance_) : 1.0;
@@ -153,8 +174,23 @@ std::vector<cv::Point2i> AStarEnergyPlanner::plan(const cv::Point2f& start, cons
     for (size_t i = 0; i < path.size(); ++i)
         path_f[i] = cv::Point2f(static_cast<float>(path[i].x), static_cast<float>(path[i].y));
 
-    path_f = smoothPath(path_f, smooth_alpha, smooth_beta, smooth_n_iter);
-    path_f = resamplePath(path_f, resample_ds);
+    auto polylineCorridorFree = [this](const std::vector<cv::Point2f>& polyline) {
+        if (polyline.size() < 2) return true;
+        for (size_t i = 0; i + 1 < polyline.size(); ++i) {
+            int x0 = static_cast<int>(std::round(polyline[i].x));
+            int y0 = static_cast<int>(std::round(polyline[i].y));
+            int x1 = static_cast<int>(std::round(polyline[i + 1].x));
+            int y1 = static_cast<int>(std::round(polyline[i + 1].y));
+            if (!edgeCorridorFree(x0, y0, x1, y1)) return false;
+        }
+        return true;
+    };
+
+    std::vector<cv::Point2f> smoothed = smoothPath(path_f, smooth_alpha, smooth_beta, smooth_n_iter);
+    smoothed = resamplePath(smoothed, resample_ds);
+    if (polylineCorridorFree(smoothed)) {
+        path_f = std::move(smoothed);
+    }
 
     std::vector<cv::Point2i> result;
     result.reserve(path_f.size());
