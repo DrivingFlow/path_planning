@@ -549,13 +549,13 @@ private:
         }
 
         // Build fixed-size side panel so text stays a constant on-screen size.
-        const int side_w = 360;
+        const int side_w = 490;
         cv::Mat side_panel(display_occ.rows, side_w, CV_8UC3, cv::Scalar(245, 245, 245));
         cv::line(side_panel, cv::Point(0, 0), cv::Point(0, side_panel.rows - 1), cv::Scalar(180, 180, 180), 1);
 
-        int y = 28;
-        const int line_h = 26;
-        const double font = 0.62;
+        int y = 42;
+        const int line_h = 39;
+        const double font = 1;
         auto put_line = [&](const std::string& text, const cv::Scalar& color = cv::Scalar(20, 20, 20)) {
             if (y < side_panel.rows - 8) {
                 cv::putText(side_panel, text, cv::Point(12, y), cv::FONT_HERSHEY_SIMPLEX, font, color, 1, cv::LINE_AA);
