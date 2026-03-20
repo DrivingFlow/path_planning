@@ -201,15 +201,6 @@ private:
         }
     }
 
-    void drawLabel(cv::Mat& img, const std::string& text) const {
-        int baseline = 0;
-        cv::Size text_size = cv::getTextSize(text, cv::FONT_HERSHEY_SIMPLEX, 0.45, 1, &baseline);
-        cv::Rect bg(5, 5, text_size.width + 8, text_size.height + baseline + 8);
-        cv::rectangle(img, bg, cv::Scalar(255, 255, 255), cv::FILLED);
-        cv::putText(img, text, cv::Point(9, 5 + text_size.height + 2),
-                    cv::FONT_HERSHEY_SIMPLEX, 0.45, cv::Scalar(0, 0, 0), 1);
-    }
-
     void render() {
         OccData occ;
         std::vector<cv::Point2d> path;
@@ -431,16 +422,16 @@ private:
                 mouse_y = mouse_y_;
             }
         }
-        std::string mode_str = follow_robot_ ? " [FOLLOW]" : (view_mode_ == ViewMode::ROI ? " [ZOOM]" : "");
+        std::string mode_str = follow_robot_ ? "FOLLOW" : (view_mode_ == ViewMode::ROI ? "ZOOM" : "FULL");
+        std::string mouse_cr = "Mouse col,row: out of bounds";
+        std::string mouse_xy = "Mouse x,y: out of bounds";
         if (mouse_x >= 0 && mouse_y >= 0 &&
             mouse_x < occ_width && mouse_y < occ_height) {
             int col = col_min + mouse_x;
             int row = row_min + mouse_y;
             cv::Point2d wp = pixelToWorld(occ, col, row);
-            drawLabel(view_occ, "col,row: " + std::to_string(col) + ", " + std::to_string(row) +
-                              "  x,y: " + cv::format("%.2f, %.2f", wp.x, wp.y) + mode_str);
-        } else {
-            drawLabel(view_occ, "col,row: out of bounds" + mode_str);
+            mouse_cr = "Mouse col,row: " + std::to_string(col) + ", " + std::to_string(row);
+            mouse_xy = "Mouse x,y: " + cv::format("%.2f, %.2f", wp.x, wp.y);
         }
 
         // Draw drag selection rectangle while dragging
@@ -544,18 +535,51 @@ private:
             }
         }
 
-        // Scale image up if the ROI is small, so the window stays usable and
-        // mouse coordinates map reliably to image pixels.
+        // Scale occupancy visualization up if the ROI is small, so the window stays usable and
+        // mouse coordinates map reliably to occupancy image pixels.
         double scale = 1.0;
         if (combined.rows < 600) {
             scale = 600.0 / combined.rows;
         }
-        cv::Mat display;
+        cv::Mat display_occ;
         if (scale > 1.01) {
-            cv::resize(combined, display, cv::Size(), scale, scale, cv::INTER_NEAREST);
+            cv::resize(combined, display_occ, cv::Size(), scale, scale, cv::INTER_NEAREST);
         } else {
-            display = combined;
+            display_occ = combined;
         }
+
+        // Build fixed-size side panel so text stays a constant on-screen size.
+        const int side_w = 360;
+        cv::Mat side_panel(display_occ.rows, side_w, CV_8UC3, cv::Scalar(245, 245, 245));
+        cv::line(side_panel, cv::Point(0, 0), cv::Point(0, side_panel.rows - 1), cv::Scalar(180, 180, 180), 1);
+
+        int y = 28;
+        const int line_h = 26;
+        const double font = 0.62;
+        auto put_line = [&](const std::string& text, const cv::Scalar& color = cv::Scalar(20, 20, 20)) {
+            if (y < side_panel.rows - 8) {
+                cv::putText(side_panel, text, cv::Point(12, y), cv::FONT_HERSHEY_SIMPLEX, font, color, 1, cv::LINE_AA);
+            }
+            y += line_h;
+        };
+
+        put_line("View mode: " + mode_str, cv::Scalar(40, 40, 120));
+        put_line(mouse_cr);
+        put_line(mouse_xy);
+        y += 8;
+        if (robot.has_value()) {
+            put_line("Robot x,y: " + cv::format("%.2f, %.2f", robot->x, robot->y), cv::Scalar(0, 120, 0));
+        } else {
+            put_line("Robot x,y: unavailable");
+        }
+        if (goal.has_value()) {
+            put_line("Goal x,y: " + cv::format("%.2f, %.2f", goal->x, goal->y), cv::Scalar(0, 120, 120));
+        } else {
+            put_line("Goal x,y: unavailable");
+        }
+
+        cv::Mat display;
+        cv::hconcat(display_occ, side_panel, display);
         {
             std::lock_guard<std::mutex> lock(mouse_mutex_);
             display_scale_ = scale;
