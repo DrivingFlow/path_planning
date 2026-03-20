@@ -12,6 +12,7 @@ def generate_launch_description():
     z_min = LaunchConfiguration("z_min")
     z_max = LaunchConfiguration("z_max")
     robot_radius = LaunchConfiguration("robot_radius")
+    origin_crop_radius = LaunchConfiguration("origin_crop_radius")
     astar_corridor_half_width = LaunchConfiguration("astar_corridor_half_width")
     rrt_iterations = LaunchConfiguration("rrt_iterations")
     step_size = LaunchConfiguration("step_size")
@@ -65,9 +66,11 @@ def generate_launch_description():
             # Maximum z-coordinate for obstacle detection (meters)
             DeclareLaunchArgument("z_max", default_value="1.0"),
             # Robot radius for collision checking (meters)
-            DeclareLaunchArgument("robot_radius", default_value="0.15"),
+            DeclareLaunchArgument("robot_radius", default_value="0.0"),
+            # Radius (meters) around robot origin to crop out obstacles (e.g. wifi adapter). 0 = disabled.
+            DeclareLaunchArgument("origin_crop_radius", default_value="0.0"),
             # A* only: additional corridor half-width around centerline (meters)
-            DeclareLaunchArgument("astar_corridor_half_width", default_value="0.0"),
+            DeclareLaunchArgument("astar_corridor_half_width", default_value="0.06"),
             # Number of RRT iterations for path planning
             DeclareLaunchArgument("rrt_iterations", default_value="10000"),
             # Step size for RRT tree expansion (meters)
@@ -145,6 +148,7 @@ def generate_launch_description():
                         "z_min": z_min,
                         "z_max": z_max,
                         "robot_radius": robot_radius,
+                        "origin_crop_radius": origin_crop_radius,
                         "astar_corridor_half_width": astar_corridor_half_width,
                         "rrt_iterations": rrt_iterations,
                         "step_size": step_size,

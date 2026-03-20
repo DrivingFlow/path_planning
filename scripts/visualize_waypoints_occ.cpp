@@ -138,32 +138,39 @@ private:
         auto* self = static_cast<WaypointsOccVisualizer*>(userdata);
         std::lock_guard<std::mutex> lock(self->mouse_mutex_);
 
+        // Convert from display (window) space to original image space.
+        // With WINDOW_NORMAL, mouse coords are in window pixels which may differ
+        // from image pixels when the image is scaled for display.
+        double s = std::max(1.0, self->display_scale_);
+        int ix = static_cast<int>(x / s);
+        int iy = static_cast<int>(y / s);
+
         if (event == cv::EVENT_LBUTTONDOWN) {
-            self->drag_start_x_ = x;
-            self->drag_start_y_ = y;
-            self->drag_end_x_ = x;
-            self->drag_end_y_ = y;
+            self->drag_start_x_ = ix;
+            self->drag_start_y_ = iy;
+            self->drag_end_x_ = ix;
+            self->drag_end_y_ = iy;
             self->is_dragging_ = true;
             return;
         }
 
         if (event == cv::EVENT_LBUTTONUP) {
             if (self->is_dragging_) {
-                int dx = x - self->drag_start_x_;
-                int dy = y - self->drag_start_y_;
+                int dx = ix - self->drag_start_x_;
+                int dy = iy - self->drag_start_y_;
                 int dist_sq = dx * dx + dy * dy;
-                if (dist_sq >= DRAG_THRESHOLD_PX * DRAG_THRESHOLD_PX) {
-                    // Drag: zoom to selected region (must be in first panel)
+                int thresh = std::max(2, static_cast<int>(DRAG_THRESHOLD_PX / s));
+                if (dist_sq >= thresh * thresh) {
                     int pw = self->last_occ_panel_width_;
                     int ph = self->last_occ_panel_height_;
                     if (pw > 0 && ph > 0 &&
                         self->drag_start_x_ >= 0 && self->drag_start_x_ < pw &&
                         self->drag_start_y_ >= 0 && self->drag_start_y_ < ph &&
-                        x >= 0 && x < pw && y >= 0 && y < ph) {
-                        int x0 = std::min(self->drag_start_x_, x);
-                        int x1 = std::max(self->drag_start_x_, x);
-                        int y0 = std::min(self->drag_start_y_, y);
-                        int y1 = std::max(self->drag_start_y_, y);
+                        ix >= 0 && ix < pw && iy >= 0 && iy < ph) {
+                        int x0 = std::min(self->drag_start_x_, ix);
+                        int x1 = std::max(self->drag_start_x_, ix);
+                        int y0 = std::min(self->drag_start_y_, iy);
+                        int y1 = std::max(self->drag_start_y_, iy);
                         int w = std::max(2, x1 - x0);
                         int h = std::max(2, y1 - y0);
                         self->view_col_min_ = self->last_col_min_ + x0;
@@ -174,7 +181,6 @@ private:
                         self->follow_robot_ = false;
                     }
                 } else {
-                    // Short press: treat as goal click
                     self->click_x_ = self->drag_start_x_;
                     self->click_y_ = self->drag_start_y_;
                     self->has_click_ = true;
@@ -186,11 +192,11 @@ private:
 
         if (event == cv::EVENT_MOUSEMOVE) {
             if (self->is_dragging_) {
-                self->drag_end_x_ = x;
-                self->drag_end_y_ = y;
+                self->drag_end_x_ = ix;
+                self->drag_end_y_ = iy;
             }
-            self->mouse_x_ = x;
-            self->mouse_y_ = y;
+            self->mouse_x_ = ix;
+            self->mouse_y_ = iy;
             self->has_mouse_ = true;
         }
     }
@@ -430,10 +436,9 @@ private:
             mouse_x < occ_width && mouse_y < occ_height) {
             int col = col_min + mouse_x;
             int row = row_min + mouse_y;
-            double x = occ.origin_x + col * occ.resolution;
-            double y = occ.origin_y + (occ.height - 1 - row) * occ.resolution;
+            cv::Point2d wp = pixelToWorld(occ, col, row);
             drawLabel(view_occ, "col,row: " + std::to_string(col) + ", " + std::to_string(row) +
-                              "  x,y: " + cv::format("%.2f, %.2f", x, y) + mode_str);
+                              "  x,y: " + cv::format("%.2f, %.2f", wp.x, wp.y) + mode_str);
         } else {
             drawLabel(view_occ, "col,row: out of bounds" + mode_str);
         }
@@ -539,8 +544,24 @@ private:
             }
         }
 
-        cv::resizeWindow(window_name_, combined.cols, combined.rows);
-        cv::imshow(window_name_, combined);
+        // Scale image up if the ROI is small, so the window stays usable and
+        // mouse coordinates map reliably to image pixels.
+        double scale = 1.0;
+        if (combined.rows < 600) {
+            scale = 600.0 / combined.rows;
+        }
+        cv::Mat display;
+        if (scale > 1.01) {
+            cv::resize(combined, display, cv::Size(), scale, scale, cv::INTER_NEAREST);
+        } else {
+            display = combined;
+        }
+        {
+            std::lock_guard<std::mutex> lock(mouse_mutex_);
+            display_scale_ = scale;
+        }
+        cv::resizeWindow(window_name_, display.cols, display.rows);
+        cv::imshow(window_name_, display);
 
         int key = cv::waitKey(1);
         if (key == 'r' || key == 'R') {
@@ -600,6 +621,7 @@ private:
     int last_row_min_ = 0;
     int last_occ_panel_width_ = 0;
     int last_occ_panel_height_ = 0;
+    double display_scale_ = 1.0;
 };
 
 int main(int argc, char** argv) {
