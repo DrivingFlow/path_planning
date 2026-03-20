@@ -66,11 +66,11 @@ def generate_launch_description():
             # Maximum z-coordinate for obstacle detection (meters)
             DeclareLaunchArgument("z_max", default_value="1.0"),
             # Robot radius for collision checking (meters)
-            DeclareLaunchArgument("robot_radius", default_value="0.0"),
+            DeclareLaunchArgument("robot_radius", default_value="0.15"),
             # Radius (meters) around robot origin to crop out obstacles (e.g. wifi adapter). 0 = disabled.
-            DeclareLaunchArgument("origin_crop_radius", default_value="0.0"),
+            DeclareLaunchArgument("origin_crop_radius", default_value="0.11"),
             # A* only: additional corridor half-width around centerline (meters)
-            DeclareLaunchArgument("astar_corridor_half_width", default_value="0.06"),
+            DeclareLaunchArgument("astar_corridor_half_width", default_value="0.0"),
             # Number of RRT iterations for path planning
             DeclareLaunchArgument("rrt_iterations", default_value="10000"),
             # Step size for RRT tree expansion (meters)
