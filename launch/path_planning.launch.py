@@ -56,9 +56,9 @@ def generate_launch_description():
     return LaunchDescription(
         [
             # Path to the PCD map file
-            DeclareLaunchArgument("map_pcd_path", default_value="/home/dog22/path_planning_ws/src/path_planning/utils/plab_03_07_3_rotated.pcd"),
+            DeclareLaunchArgument("map_pcd_path", default_value="/home/unitree/path_planning/src/path_planning/utils/plab_03_07_3_rotated.pcd"),
             # Path to the PNG occupancy grid map file
-            DeclareLaunchArgument("map_png_path", default_value="/home/dog22/path_planning_ws/src/path_planning/utils/plab_03_07_3_rotated.png"),
+            DeclareLaunchArgument("map_png_path", default_value="/home/unitree/path_planning/src/path_planning/utils/plab_03_07_3_rotated.png"),
             # Resolution of the occupancy grid (meters per cell)
             DeclareLaunchArgument("resolution", default_value="0.05"),
             # Minimum z-coordinate for obstacle detection (meters)
@@ -93,8 +93,8 @@ def generate_launch_description():
             DeclareLaunchArgument("waypoints_topic", default_value="/waypoints"),
             # Topic name for publishing occupancy grid
             DeclareLaunchArgument("occupancy_grid_topic", default_value="/occupancy_grid"),
-            # Enable visualization of path and occupancy grid
-            DeclareLaunchArgument("visualize", default_value="True"),
+            # Enable visualization of path and occupancy grid (requires X display)
+            DeclareLaunchArgument("visualize", default_value="False"),
             # Visualization update rate (Hz)
             DeclareLaunchArgument("viz_rate", default_value="10.0"),
             # Visualizer type: 'cpp' or 'python'

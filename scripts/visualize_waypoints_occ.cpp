@@ -12,6 +12,8 @@
 #include <vector>
 #include <optional>
 #include <cmath>
+#include <iostream>
+#include <cstdio>
 
 enum class ViewMode { FULL, ROI, FOLLOW };
 
@@ -43,37 +45,47 @@ public:
         show_energy_map_ = declare_parameter<bool>("show_energy_map", true);
         show_agent_centered_roi_ = declare_parameter<bool>("show_agent_centered_roi", true);
         follow_radius_m_ = declare_parameter<double>("follow_radius_m", 5.0);
+
+        rclcpp::QoS qos_be(1);
+        qos_be.best_effort().durability_volatile();
+
         sub_occ_ = create_subscription<nav_msgs::msg::OccupancyGrid>(
-            occ_topic, 10, [this](const nav_msgs::msg::OccupancyGrid::SharedPtr msg) {
+            occ_topic, qos_be, [this](const nav_msgs::msg::OccupancyGrid::SharedPtr msg) {
                 onOcc(msg);
             });
         sub_path_ = create_subscription<nav_msgs::msg::Path>(
-            path_topic, 10, [this](const nav_msgs::msg::Path::SharedPtr msg) {
+            path_topic, qos_be, [this](const nav_msgs::msg::Path::SharedPtr msg) {
                 onPath(msg, path_poses_);
             });
         sub_waypoints_ = create_subscription<nav_msgs::msg::Path>(
-            waypoints_topic, 10, [this](const nav_msgs::msg::Path::SharedPtr msg) {
+            waypoints_topic, qos_be, [this](const nav_msgs::msg::Path::SharedPtr msg) {
                 onPath(msg, waypoint_poses_);
             });
         if (!pose_topic.empty()) {
             sub_pose_ = create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
-                pose_topic, 10,
+                pose_topic, qos_be,
                 [this](const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg) {
                     onPose(msg);
                 });
         }
         if (!goal_topic.empty()) {
             sub_goal_ = create_subscription<geometry_msgs::msg::PoseStamped>(
-                goal_topic, 10,
+                goal_topic, qos_be,
                 [this](const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
                     onGoal(msg);
                 });
-            pub_goal_ = create_publisher<geometry_msgs::msg::PoseStamped>(goal_topic, 10);
+            pub_goal_ = create_publisher<geometry_msgs::msg::PoseStamped>(goal_topic, qos_be);
         }
 
         timer_ = create_wall_timer(
             std::chrono::milliseconds(static_cast<int>(1000.0 / rate_hz_)),
             [this]() { render(); });
+
+        // Flush stdout before creating window to prevent GTK initialization issues
+        // when output is piped (the "| grep err" workaround symptom)
+        std::cout << std::flush;
+        std::fflush(stdout);
+        std::fflush(stderr);
 
         cv::namedWindow(window_name_, cv::WINDOW_NORMAL);
         cv::resizeWindow(window_name_, 900, 900);
@@ -649,6 +661,11 @@ private:
 };
 
 int main(int argc, char** argv) {
+    // Force line-buffered stdout/stderr to prevent display issues when output is piped
+    // This fixes the "| grep err" workaround symptom where piping affects OpenCV GTK init
+    setvbuf(stdout, nullptr, _IOLBF, 0);
+    setvbuf(stderr, nullptr, _IOLBF, 0);
+
     rclcpp::init(argc, argv);
     auto node = std::make_shared<WaypointsOccVisualizer>();
     rclcpp::spin(node);

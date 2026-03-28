@@ -59,7 +59,7 @@ class PredictionVisualizer(Node):
         super().__init__('prediction_visualizer')
 
         qos = QoSProfile(
-            reliability=ReliabilityPolicy.RELIABLE,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
             depth=1,
         )

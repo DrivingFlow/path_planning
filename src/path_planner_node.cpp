@@ -105,16 +105,22 @@ public:
             initBridge(map_pcd, map_png);
         }
 
+        rclcpp::SensorDataQoS sensor_qos;
+        rclcpp::QoS qos_volatile(1);
+        qos_volatile.reliable().durability_volatile();
+        rclcpp::QoS qos_be(1);
+        qos_be.best_effort().durability_volatile();
+
         sub_live_cloud_ = create_subscription<sensor_msgs::msg::PointCloud2>(
-            "/lidar_map", 10, [this](const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
+            "/lidar_map", sensor_qos, [this](const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
                 onPointCloud(msg);
             });
         sub_pose_ = create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
-            "/pcl_pose", 10, [this](const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg) {
+            "/pcl_pose", sensor_qos, [this](const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg) {
                 onPose(msg);
             });
         sub_goal_ = create_subscription<geometry_msgs::msg::PoseStamped>(
-            "/goal_pose", 10, [this](const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
+            "/goal_pose", qos_be, [this](const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
                 onGoal(msg);
             });
 
@@ -122,23 +128,26 @@ public:
         if (mode == "map_frame_model" || mode == "agent_centered_model") {
             std::string input_topic = get_parameter("model_occ_input_topic").as_string();
             std::string output_topic = get_parameter("model_predicted_output_topic").as_string();
-            pub_model_input_ = create_publisher<path_planning::msg::AgentCenteredInput>(input_topic, 10);
+            rclcpp::QoS qos_model(1);
+            qos_model.best_effort().durability_volatile();
+            pub_model_input_ = create_publisher<path_planning::msg::AgentCenteredInput>(input_topic, qos_model);
             if (mode == "map_frame_model") {
                 sub_model_output_ = create_subscription<path_planning::msg::OccupancyGridArray>(
-                    output_topic, 10, [this](const path_planning::msg::OccupancyGridArray::SharedPtr msg) {
+                    output_topic, qos_model, [this](const path_planning::msg::OccupancyGridArray::SharedPtr msg) {
                         onPredictedGrids(msg);
                     });
             } else {
                 sub_model_output_agent_ = create_subscription<path_planning::msg::AgentCenteredInput>(
-                    output_topic, 10, [this](const path_planning::msg::AgentCenteredInput::SharedPtr msg) {
+                    output_topic, qos_model, [this](const path_planning::msg::AgentCenteredInput::SharedPtr msg) {
                         onPredictedAgentCentered(msg);
                     });
             }
         }
 
-        pub_path_ = create_publisher<nav_msgs::msg::Path>("/planned_path", 10);
-        pub_waypoints_ = create_publisher<nav_msgs::msg::Path>("/waypoints", 10);
-        pub_occ_grid_ = create_publisher<nav_msgs::msg::OccupancyGrid>("/occupancy_grid", 10);
+        pub_path_ = create_publisher<nav_msgs::msg::Path>("/planned_path", qos_be);
+        pub_waypoints_ = create_publisher<nav_msgs::msg::Path>("/waypoints", qos_be);
+        pub_occ_grid_ = create_publisher<nav_msgs::msg::OccupancyGrid>("/occupancy_grid", qos_be);
+        pub_live_grid_ = create_publisher<nav_msgs::msg::OccupancyGrid>("/live_obstacles", qos_volatile);
 
         int interval_ms = (mode == "agent_centered_model") ? 100 : get_parameter("plan_interval_ms").as_int();
         RCLCPP_INFO(get_logger(), "Plan interval: %d ms (%s)", interval_ms,
@@ -327,6 +336,26 @@ private:
             for (int c = 0; c < grid.cols; ++c)
                 occ_msg.data[static_cast<size_t>(r * grid.cols + c)] = (grid.at<uchar>(r, c) >= 50) ? 100 : 0;
         pub_occ_grid_->publish(occ_msg);
+    }
+
+    void publishLiveGrid(const cv::Mat& grid, const std::string& frame_id = "map",
+                         double origin_x = 0, double origin_y = 0, double resolution = 0.05) {
+        if (grid.empty() || !pub_live_grid_) return;
+        nav_msgs::msg::OccupancyGrid occ_msg;
+        occ_msg.header.frame_id = frame_id;
+        occ_msg.header.stamp = now();
+        occ_msg.info.resolution = static_cast<float>(resolution);
+        occ_msg.info.width = grid.cols;
+        occ_msg.info.height = grid.rows;
+        occ_msg.info.origin.position.x = origin_x;
+        occ_msg.info.origin.position.y = origin_y;
+        occ_msg.info.origin.position.z = 0.0;
+        occ_msg.info.origin.orientation.w = 1.0;
+        occ_msg.data.resize(static_cast<size_t>(grid.rows * grid.cols));
+        for (int r = 0; r < grid.rows; ++r)
+            for (int c = 0; c < grid.cols; ++c)
+                occ_msg.data[static_cast<size_t>(r * grid.cols + c)] = (grid.at<uchar>(r, c) >= 50) ? 100 : 0;
+        pub_live_grid_->publish(occ_msg);
     }
 
     cv::Mat cropMapAndCenterOnCanvas(const cv::Mat& full_grid,
@@ -620,6 +649,7 @@ private:
             if (mode == "live") {
                 cv::Mat live_grid = bridge_.pointcloudToOccupancyGrid(live_pts, z_min, z_max);
                 combined = bridge_.mergeWithStaticMap(live_grid);
+                publishLiveGrid(live_grid, "map", bridge_.xMin(), bridge_.yMin(), bridge_.resolution());
             } else if (mode == "map_frame_model") {
                 cv::Mat live_grid = bridge_.pointcloudToOccupancyGrid(live_pts, z_min, z_max);
                 cv::Mat current_combined = bridge_.mergeWithStaticMap(live_grid);
@@ -925,6 +955,7 @@ private:
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pub_path_;
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pub_waypoints_;
     rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr pub_occ_grid_;
+    rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr pub_live_grid_;
     rclcpp::Publisher<path_planning::msg::AgentCenteredInput>::SharedPtr pub_model_input_;
     rclcpp::Subscription<path_planning::msg::OccupancyGridArray>::SharedPtr sub_model_output_;
     rclcpp::Subscription<path_planning::msg::AgentCenteredInput>::SharedPtr sub_model_output_agent_;
