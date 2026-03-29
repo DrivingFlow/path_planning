@@ -13,6 +13,7 @@ def generate_launch_description():
     z_max = LaunchConfiguration("z_max")
     robot_radius = LaunchConfiguration("robot_radius")
     origin_crop_radius = LaunchConfiguration("origin_crop_radius")
+    origin_crop_forward_offset = LaunchConfiguration("origin_crop_forward_offset")
     astar_corridor_half_width = LaunchConfiguration("astar_corridor_half_width")
     rrt_iterations = LaunchConfiguration("rrt_iterations")
     step_size = LaunchConfiguration("step_size")
@@ -36,6 +37,8 @@ def generate_launch_description():
     view_row_max = LaunchConfiguration("view_row_max")
     show_energy_map = LaunchConfiguration("show_energy_map")
     show_agent_centered_roi = LaunchConfiguration("show_agent_centered_roi")
+    show_robot_marker = LaunchConfiguration("show_robot_marker")
+    show_goal_marker = LaunchConfiguration("show_goal_marker")
 
     sample_col_min = LaunchConfiguration("sample_col_min")
     sample_col_max = LaunchConfiguration("sample_col_max")
@@ -67,8 +70,10 @@ def generate_launch_description():
             DeclareLaunchArgument("z_max", default_value="1.0"),
             # Robot radius for collision checking (meters)
             DeclareLaunchArgument("robot_radius", default_value="0.15"),
-            # Radius (meters) around robot origin to crop out obstacles (e.g. wifi adapter). 0 = disabled.
-            DeclareLaunchArgument("origin_crop_radius", default_value="0.11"),
+            # Radius (meters) of circle to crop out obstacles (e.g. wifi adapter). 0 = disabled.
+            DeclareLaunchArgument("origin_crop_radius", default_value="0.06"),
+            # Forward offset (meters) of crop circle center from robot origin along +x.
+            DeclareLaunchArgument("origin_crop_forward_offset", default_value="0.20"),
             # A* only: additional corridor half-width around centerline (meters)
             DeclareLaunchArgument("astar_corridor_half_width", default_value="0.0"),
             # Number of RRT iterations for path planning
@@ -103,6 +108,10 @@ def generate_launch_description():
             DeclareLaunchArgument("show_energy_map", default_value="False"),
             # Whether to show agent-centered 5 m radius ROI panel in C++ visualizer (independent of energy map)
             DeclareLaunchArgument("show_agent_centered_roi", default_value="False"),
+            # Whether to draw the green robot marker on the occupancy view
+            DeclareLaunchArgument("show_robot_marker", default_value="True"),
+            # Whether to draw the yellow goal marker on the occupancy view
+            DeclareLaunchArgument("show_goal_marker", default_value="True"),
             # Minimum column for visualization view; -1 = full grid width
             DeclareLaunchArgument("view_col_min", default_value="420"),
             # Maximum column for visualization view; -1 = full grid width
@@ -149,6 +158,7 @@ def generate_launch_description():
                         "z_max": z_max,
                         "robot_radius": robot_radius,
                         "origin_crop_radius": origin_crop_radius,
+                        "origin_crop_forward_offset": origin_crop_forward_offset,
                         "astar_corridor_half_width": astar_corridor_half_width,
                         "rrt_iterations": rrt_iterations,
                         "step_size": step_size,
@@ -230,6 +240,8 @@ def generate_launch_description():
                         "view_row_max": view_row_max,
                         "show_energy_map": show_energy_map,
                         "show_agent_centered_roi": show_agent_centered_roi,
+                        "show_robot_marker": show_robot_marker,
+                        "show_goal_marker": show_goal_marker,
                     }
                 ],
                 condition=IfCondition(

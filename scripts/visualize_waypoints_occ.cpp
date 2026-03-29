@@ -44,6 +44,8 @@ public:
         view_row_max_ = declare_parameter<int>("view_row_max", -1);
         show_energy_map_ = declare_parameter<bool>("show_energy_map", true);
         show_agent_centered_roi_ = declare_parameter<bool>("show_agent_centered_roi", true);
+        show_robot_marker_ = declare_parameter<bool>("show_robot_marker", true);
+        show_goal_marker_ = declare_parameter<bool>("show_goal_marker", true);
         follow_radius_m_ = declare_parameter<double>("follow_radius_m", 5.0);
 
         rclcpp::QoS qos_be(1);
@@ -372,7 +374,7 @@ private:
             }
         }
 
-        if (robot.has_value()) {
+        if (show_robot_marker_ && robot.has_value()) {
             cv::Point p;
             if (worldToPixel(occ, robot.value(), p)) {
                 cv::Point p_local = p - cv::Point(col_min, row_min);
@@ -383,7 +385,7 @@ private:
             }
         }
 
-        if (goal.has_value()) {
+        if (show_goal_marker_ && goal.has_value()) {
             cv::Point p;
             if (worldToPixel(occ, goal.value(), p)) {
                 cv::Point p_local = p - cv::Point(col_min, row_min);
@@ -526,7 +528,7 @@ private:
                             cv::circle(view_agent, p_local, 3, cv::Scalar(0, 0, 255), -1);
                     }
                 }
-                if (robot.has_value()) {
+                if (show_robot_marker_ && robot.has_value()) {
                     cv::Point p;
                     if (worldToPixel(occ, robot.value(), p)) {
                         cv::Point p_local = p - ac_offset;
@@ -534,7 +536,7 @@ private:
                             cv::circle(view_agent, p_local, 6, cv::Scalar(0, 255, 0), -1);
                     }
                 }
-                if (goal.has_value()) {
+                if (show_goal_marker_ && goal.has_value()) {
                     cv::Point p;
                     if (worldToPixel(occ, goal.value(), p)) {
                         cv::Point p_local = p - ac_offset;
@@ -641,6 +643,8 @@ private:
     int view_row_max_ = -1;
     bool show_energy_map_ = true;
     bool show_agent_centered_roi_ = false;
+    bool show_robot_marker_ = true;
+    bool show_goal_marker_ = true;
     double follow_radius_m_ = 5.0;
     const std::string window_name_ = "Occupancy grid + waypoints (map frame)";
 

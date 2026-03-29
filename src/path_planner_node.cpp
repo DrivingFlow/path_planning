@@ -65,8 +65,10 @@ public:
         declare_parameter<double>("z_max", 2.0);
         // Robot radius in meters (converted to pixels internally for obstacle inflation)
         declare_parameter<double>("robot_radius", 0.05);
-        // Radius (m) around robot origin to clear obstacles from occupancy grid (e.g. wifi adapter sticking up). 0 = disabled.
+        // Radius (m) of circle to clear obstacles from occupancy grid (e.g. wifi adapter sticking up). 0 = disabled.
         declare_parameter<double>("origin_crop_radius", 0.0);
+        // Forward offset (m) of the crop circle center from robot origin along +x (robot forward).
+        declare_parameter<double>("origin_crop_forward_offset", 0.0);
         // Additional half-width (m) to enforce a corridor around the A* centerline.
         declare_parameter<double>("astar_corridor_half_width", 0.0);
         // Number of RRT* planning iterations (more = better path but slower)
@@ -779,13 +781,16 @@ private:
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
             "Combined grid: %d x %d (mode=%s)", combined.cols, combined.rows, mode.c_str());
 
-        // Clear obstacles within origin_crop_radius of the robot (e.g. wifi adapter visible to lidar)
+        // Clear obstacles within origin_crop_radius of a point offset forward from the robot origin
         double crop_radius_m = get_parameter("origin_crop_radius").as_double();
         if (have_pose && crop_radius_m > 0.0 && !combined.empty()) {
+            double fwd_offset = get_parameter("origin_crop_forward_offset").as_double();
+            double crop_cx = start_x + fwd_offset * std::cos(start_yaw);
+            double crop_cy = start_y + fwd_offset * std::sin(start_yaw);
             double res = bridge_.resolution();
             int crop_radius_px = static_cast<int>(std::ceil(crop_radius_m / res));
             int center_col, center_row;
-            bridge_.worldToGrid(start_x, start_y, center_col, center_row);
+            bridge_.worldToGrid(crop_cx, crop_cy, center_col, center_row);
             int r_min = std::max(0, center_row - crop_radius_px);
             int r_max = std::min(combined.rows - 1, center_row + crop_radius_px);
             int c_min = std::max(0, center_col - crop_radius_px);
