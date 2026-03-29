@@ -270,7 +270,7 @@ private:
         const double* sum_ptr = sum.ptr<double>();
         uchar* out_ptr = out.ptr<uchar>();
         for (int i = 0; i < h * w; ++i)
-            out_ptr[i] = sum_ptr[i] >= 127.5 ? 255 : 0;
+            out_ptr[i] = sum_ptr[i] >= 1 ? 255 : 0;
         return out;
     }
 
