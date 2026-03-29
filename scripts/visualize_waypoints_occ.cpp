@@ -253,6 +253,13 @@ private:
         cv::Mat vis;
         cv::cvtColor(img, vis, cv::COLOR_GRAY2BGR);
 
+        for (int r = 0; r < occ.height; ++r) {
+            for (int c = 0; c < occ.width; ++c) {
+                if (src[r * occ.width + c] == 101)
+                    vis.at<cv::Vec3b>(r, c) = cv::Vec3b(180, 60, 0);
+            }
+        }
+
         // Optional: build an "energy" map that matches occupancy_grid_planning_energy_opt.py:
         // distance transform of free space visualized with a viridis-style colormap.
         cv::Mat energy_color;

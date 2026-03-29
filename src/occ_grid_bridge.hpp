@@ -92,6 +92,26 @@ public:
                                cv::Mat& map_out) const;
 
     /**
+     * Build a map-frame-oriented 201×201 occupancy grid centred on the robot.
+     * Same circular cut as pointcloudToEgoOccupancyGrid201 (5 m radius, 201×201)
+     * but the grid axes stay aligned with the map frame (no yaw rotation).
+     * Used for the map_frame_model input.
+     */
+    static cv::Mat pointcloudToMapFrameOccupancyGrid201(
+        const std::vector<std::array<float, 3>>& points_xyz,
+        double robot_x, double robot_y,
+        double z_min = 0.1, double z_max = 2.0);
+
+    /**
+     * Paste a 201×201 map-frame-oriented grid into the full map grid.
+     * No rotation: grid axes are already aligned with map.  Centre placed at
+     * (anchor_x, anchor_y).  Non-free cells are written via max with existing.
+     */
+    void pasteMapFrameGridIntoMap(const cv::Mat& mf_grid,
+                                  double anchor_x, double anchor_y,
+                                  cv::Mat& map_out) const;
+
+    /**
      * Render the static (vanilla) map into a 201×201 ego-centered grid at (robot_x, robot_y, robot_yaw).
      * Same coordinate convention as pointcloudToEgoOccupancyGrid201. Use with cv::max(ego_live, ego_static)
      * to give the model both live scans and static map context in the circular cutout.

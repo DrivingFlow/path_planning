@@ -131,17 +131,10 @@ public:
             rclcpp::QoS qos_model(1);
             qos_model.best_effort().durability_volatile();
             pub_model_input_ = create_publisher<path_planning::msg::AgentCenteredInput>(input_topic, qos_model);
-            if (mode == "map_frame_model") {
-                sub_model_output_ = create_subscription<path_planning::msg::OccupancyGridArray>(
-                    output_topic, qos_model, [this](const path_planning::msg::OccupancyGridArray::SharedPtr msg) {
-                        onPredictedGrids(msg);
-                    });
-            } else {
-                sub_model_output_agent_ = create_subscription<path_planning::msg::AgentCenteredInput>(
-                    output_topic, qos_model, [this](const path_planning::msg::AgentCenteredInput::SharedPtr msg) {
-                        onPredictedAgentCentered(msg);
-                    });
-            }
+            sub_model_output_agent_ = create_subscription<path_planning::msg::AgentCenteredInput>(
+                output_topic, qos_model, [this](const path_planning::msg::AgentCenteredInput::SharedPtr msg) {
+                    onPredictedAgentCentered(msg);
+                });
         }
 
         pub_path_ = create_publisher<nav_msgs::msg::Path>("/planned_path", qos_be);
@@ -149,9 +142,10 @@ public:
         pub_occ_grid_ = create_publisher<nav_msgs::msg::OccupancyGrid>("/occupancy_grid", qos_be);
         pub_live_grid_ = create_publisher<nav_msgs::msg::OccupancyGrid>("/live_obstacles", qos_volatile);
 
-        int interval_ms = (mode == "agent_centered_model") ? 100 : get_parameter("plan_interval_ms").as_int();
+        bool model_mode = (mode == "agent_centered_model" || mode == "map_frame_model");
+        int interval_ms = model_mode ? 100 : get_parameter("plan_interval_ms").as_int();
         RCLCPP_INFO(get_logger(), "Plan interval: %d ms (%s)", interval_ms,
-            (mode == "agent_centered_model") ? "agent_centered, matches 10 Hz lidar" : "plan_interval_ms");
+            model_mode ? "model mode, matches 10 Hz lidar" : "plan_interval_ms");
         plan_timer_ = create_wall_timer(
             std::chrono::milliseconds(interval_ms),
             [this]() { runPlanningCycle(); });
@@ -332,9 +326,18 @@ private:
         occ_msg.info.origin.position.z = 0.0;
         occ_msg.info.origin.orientation.w = 1.0;
         occ_msg.data.resize(static_cast<size_t>(grid.rows * grid.cols));
+        bool have_pred = (!pred_only_.empty() && pred_only_.rows == grid.rows && pred_only_.cols == grid.cols);
         for (int r = 0; r < grid.rows; ++r)
-            for (int c = 0; c < grid.cols; ++c)
-                occ_msg.data[static_cast<size_t>(r * grid.cols + c)] = (grid.at<uchar>(r, c) >= 50) ? 100 : 0;
+            for (int c = 0; c < grid.cols; ++c) {
+                size_t idx = static_cast<size_t>(r * grid.cols + c);
+                if (grid.at<uchar>(r, c) < 50) {
+                    occ_msg.data[idx] = 0;
+                } else if (have_pred && pred_only_.at<uchar>(r, c) >= 50) {
+                    occ_msg.data[idx] = 101;
+                } else {
+                    occ_msg.data[idx] = 100;
+                }
+            }
         pub_occ_grid_->publish(occ_msg);
     }
 
@@ -651,53 +654,53 @@ private:
                 combined = bridge_.mergeWithStaticMap(live_grid);
                 publishLiveGrid(live_grid, "map", bridge_.xMin(), bridge_.yMin(), bridge_.resolution());
             } else if (mode == "map_frame_model") {
-                cv::Mat live_grid = bridge_.pointcloudToOccupancyGrid(live_pts, z_min, z_max);
-                cv::Mat current_combined = bridge_.mergeWithStaticMap(live_grid);
-                int sample_col_min = get_parameter("sample_col_min").as_int();
-                int sample_col_max = get_parameter("sample_col_max").as_int();
-                int sample_row_min = get_parameter("sample_row_min").as_int();
-                int sample_row_max = get_parameter("sample_row_max").as_int();
                 if (have_pose) {
-                    cv::Mat canvas = cropMapAndCenterOnCanvas(
-                        current_combined, sample_col_min, sample_col_max, sample_row_min, sample_row_max);
-                    if (!canvas.empty()) {
+                    cv::Mat mf_grid = OccGridBridge::pointcloudToMapFrameOccupancyGrid201(
+                        live_pts, start_x, start_y, z_min, z_max);
+                    EgoFrame frame;
+                    frame.grid = mf_grid;
+                    frame.x = start_x;
+                    frame.y = start_y;
+                    frame.yaw = start_yaw;
+                    frame.time = now();
+                    const int stride = get_parameter("agent_frame_stride").as_int();
+                    const size_t required_queue = static_cast<size_t>(4 * std::max(1, stride) + 1);
+                    {
                         std::lock_guard<std::mutex> lock(mutex_);
-                        queue_map_frame_.push_back(canvas);
-                        while (queue_map_frame_.size() > 5u) queue_map_frame_.pop_front();
+                        queue_ego_frames_.push_back(frame);
+                        while (queue_ego_frames_.size() > required_queue) queue_ego_frames_.pop_front();
+                        anchor_x_ = queue_ego_frames_.back().x;
+                        anchor_y_ = queue_ego_frames_.back().y;
+                        anchor_yaw_ = queue_ego_frames_.back().yaw;
                     }
-                }
-                if (pub_model_input_ && queue_map_frame_.size() == 5u) {
-                    std::deque<cv::Mat> q;
-                    { std::lock_guard<std::mutex> lock(mutex_); q = queue_map_frame_; }
-                    if (q.size() == 5u) {
-                        path_planning::msg::AgentCenteredInput msg = toAgentCenteredInputMapFrame(q);
+                    if (pub_model_input_ && queue_ego_frames_.size() == required_queue) {
+                        std::deque<EgoFrame> q_full;
+                        { std::lock_guard<std::mutex> lock(mutex_); q_full = queue_ego_frames_; }
+                        std::deque<EgoFrame> q_strided;
+                        for (int s = 0; s < 5; ++s)
+                            q_strided.push_back(q_full[static_cast<size_t>(s * std::max(1, stride))]);
+                        path_planning::msg::AgentCenteredInput msg = toAgentCenteredInput(q_strided);
+                        msg.mode = 0;
                         pub_model_input_->publish(msg);
                     }
                 }
                 combined = bridge_.mergeWithStaticMap(cv::Mat::zeros(bridge_.gridHeight(), bridge_.gridWidth(), CV_8UC1));
-                int sc_min = get_parameter("sample_col_min").as_int();
-                int sc_max = get_parameter("sample_col_max").as_int();
-                int sr_min = get_parameter("sample_row_min").as_int();
-                int sr_max = get_parameter("sample_row_max").as_int();
-                if (predicted_msg && !predicted_msg->grids.empty()) {
-                    int N = get_parameter("num_predicted_frames").as_int();
-                    double T = get_parameter("prediction_temperature").as_double();
-                    double threshold = get_parameter("model_occupancy_threshold").as_double();
-                    size_t n = std::min(static_cast<size_t>(N), predicted_msg->grids.size());
-                    std::vector<cv::Mat> grids(n);
-                    for (size_t i = 0; i < n; ++i)
-                        grids[i] = occupancyGridToMat(predicted_msg->grids[i], threshold);
-                    std::vector<double> w = boltmannWeights(static_cast<int>(n), T);
-                    cv::Mat weighted = weightCombineGrids(grids, w);
-                    if (!weighted.empty())
-                        cookieCutterCanvasCropOntoMap(weighted, sc_min, sc_max, sr_min, sr_max, combined);
-                    else {
-                        cv::Mat zero_canvas = cv::Mat::zeros(MAP_FRAME_CANVAS_SIZE, MAP_FRAME_CANVAS_SIZE, CV_8UC1);
-                        cookieCutterCanvasCropOntoMap(zero_canvas, sc_min, sc_max, sr_min, sr_max, combined);
+                pred_only_ = cv::Mat::zeros(bridge_.gridHeight(), bridge_.gridWidth(), CV_8UC1);
+                if (predicted_agent_msg) {
+                    std::vector<cv::Mat> grids = agentCenteredInputToMats(*predicted_agent_msg);
+                    if (!grids.empty()) {
+                        int N = get_parameter("num_predicted_frames").as_int();
+                        double T = get_parameter("prediction_temperature").as_double();
+                        size_t n = std::min(static_cast<size_t>(N), grids.size());
+                        std::vector<double> w = boltmannWeights(static_cast<int>(n), T);
+                        cv::Mat weighted_mf = weightCombineGrids(grids, w);
+                        if (!weighted_mf.empty()) {
+                            double ax, ay;
+                            { std::lock_guard<std::mutex> lock(mutex_); ax = anchor_x_; ay = anchor_y_; }
+                            bridge_.pasteMapFrameGridIntoMap(weighted_mf, ax, ay, combined);
+                            bridge_.pasteMapFrameGridIntoMap(weighted_mf, ax, ay, pred_only_);
+                        }
                     }
-                } else {
-                    cv::Mat zero_canvas = cv::Mat::zeros(MAP_FRAME_CANVAS_SIZE, MAP_FRAME_CANVAS_SIZE, CV_8UC1);
-                    cookieCutterCanvasCropOntoMap(zero_canvas, sc_min, sc_max, sr_min, sr_max, combined);
                 }
             } else if (mode == "agent_centered_model") {
                 if (have_pose) {
@@ -745,6 +748,7 @@ private:
                     }
                 }
                 combined = bridge_.mergeWithStaticMap(cv::Mat::zeros(bridge_.gridHeight(), bridge_.gridWidth(), CV_8UC1));
+                pred_only_ = cv::Mat::zeros(bridge_.gridHeight(), bridge_.gridWidth(), CV_8UC1);
                 if (predicted_agent_msg) {
                     std::vector<cv::Mat> grids = agentCenteredInputToMats(*predicted_agent_msg);
                     if (!grids.empty()) {
@@ -757,6 +761,7 @@ private:
                             double ax, ay, ayaw;
                             { std::lock_guard<std::mutex> lock(mutex_); ax = anchor_x_; ay = anchor_y_; ayaw = anchor_yaw_; }
                             bridge_.pasteEgoGridIntoMap(weighted_ego, ax, ay, ayaw, combined);
+                            bridge_.pasteEgoGridIntoMap(weighted_ego, ax, ay, ayaw, pred_only_);
                         }
                     }
                 }
@@ -979,6 +984,7 @@ private:
     std::deque<cv::Mat> queue_map_frame_;
     std::deque<EgoFrame> queue_ego_frames_;
     double anchor_x_ = 0, anchor_y_ = 0, anchor_yaw_ = 0;
+    cv::Mat pred_only_;
 };
 
 int main(int argc, char** argv) {

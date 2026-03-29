@@ -87,6 +87,7 @@ class PredictionVisualizer(Node):
 
         self.yaw = 0.0
         self.msg_count = 0
+        self.input_mode = 1  # 0 = map_frame (no rotation), 1 = agent_centered (rotate by yaw)
 
         # Pre-allocate storage grids (float32, 201×201)
         self.grids_input = [np.zeros((H, W), np.float32) for _ in range(5)]
@@ -143,6 +144,7 @@ class PredictionVisualizer(Node):
                               borderValue=0.0)
 
     def _input_cb(self, msg):
+        self.input_mode = msg.mode
         occ_fields = [msg.occ_0, msg.occ_1, msg.occ_2, msg.occ_3, msg.occ_4]
         for t in range(5):
             grid = np.array(occ_fields[t], dtype=np.float32)
@@ -150,7 +152,9 @@ class PredictionVisualizer(Node):
                 self.get_logger().warn(
                     f'Input occ_{t} has {grid.size} elements, expected {H*W}')
                 continue
-            grid = self._rotate_ego_to_map(grid.reshape(H, W))
+            grid = grid.reshape(H, W)
+            if msg.mode == 1:
+                grid = self._rotate_ego_to_map(grid)
             self.grids_input[t] = grid
             self._blit(0, t, grid)
         self._show()
@@ -163,7 +167,9 @@ class PredictionVisualizer(Node):
                 self.get_logger().warn(
                     f'occ_{t} has {grid.size} elements, expected {H*W}')
                 continue
-            grid = self._rotate_ego_to_map(grid.reshape(H, W))
+            grid = grid.reshape(H, W)
+            if self.input_mode == 1:
+                grid = self._rotate_ego_to_map(grid)
             self.grids_pred[t] = grid
             self._blit(1, t, grid)
 

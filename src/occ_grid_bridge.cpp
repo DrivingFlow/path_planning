@@ -192,6 +192,72 @@ cv::Mat OccGridBridge::pointcloudToEgoOccupancyGrid201(
     return grid;
 }
 
+cv::Mat OccGridBridge::pointcloudToMapFrameOccupancyGrid201(
+    const std::vector<std::array<float, 3>>& points_xyz,
+    double robot_x, double robot_y,
+    double z_min, double z_max) {
+    const int sz = EGO_GRID_SIZE;
+    const double res = egoGridResolution();
+    const double ox = egoGridOriginX();
+    const double oy = egoGridOriginY();
+    const double r2_max = EGO_RADIUS_M * EGO_RADIUS_M;
+
+    int n = 0;
+    for (const auto& pt : points_xyz)
+        if (pt[2] >= z_min && pt[2] <= z_max) ++n;
+    if (n == 0) return cv::Mat::zeros(sz, sz, CV_8UC1);
+
+    Eigen::Matrix2Xd delta(2, n);
+    n = 0;
+    for (const auto& pt : points_xyz) {
+        if (pt[2] >= z_min && pt[2] <= z_max) {
+            delta(0, n) = pt[0] - robot_x;
+            delta(1, n) = pt[1] - robot_y;
+            ++n;
+        }
+    }
+
+    cv::Mat grid = cv::Mat::zeros(sz, sz, CV_8UC1);
+    for (int i = 0; i < n; ++i) {
+        double dx = delta(0, i), dy = delta(1, i);
+        if (dx * dx + dy * dy > r2_max) continue;
+        int col = static_cast<int>((dx - ox) / res);
+        int row = static_cast<int>((oy - dy) / res);
+        if (col >= 0 && col < sz && row >= 0 && row < sz)
+            grid.ptr<uchar>(row)[col] = 255;
+    }
+    return grid;
+}
+
+void OccGridBridge::pasteMapFrameGridIntoMap(const cv::Mat& mf_grid,
+                                             double anchor_x, double anchor_y,
+                                             cv::Mat& map_out) const {
+    if (mf_grid.rows != EGO_GRID_SIZE || mf_grid.cols != EGO_GRID_SIZE || map_out.empty())
+        return;
+    const double res_ego = egoGridResolution();
+    const double ox_ego = egoGridOriginX();
+    const double oy_ego = egoGridOriginY();
+    const double r2_max = EGO_RADIUS_M * EGO_RADIUS_M;
+
+    for (int r = 0; r < EGO_GRID_SIZE; ++r) {
+        const uchar* row_ptr = mf_grid.ptr<uchar>(r);
+        for (int c = 0; c < EGO_GRID_SIZE; ++c) {
+            if (row_ptr[c] == 0) continue;
+            double dx = ox_ego + c * res_ego;
+            double dy = oy_ego - r * res_ego;
+            if (dx * dx + dy * dy > r2_max) continue;
+            double map_x = anchor_x + dx;
+            double map_y = anchor_y + dy;
+            int col, row;
+            worldToGrid(map_x, map_y, col, row);
+            if (col >= 0 && col < w_ && row >= 0 && row < h_) {
+                uchar& cell = map_out.ptr<uchar>(row)[col];
+                if (255 > cell) cell = 255;
+            }
+        }
+    }
+}
+
 void OccGridBridge::pasteEgoGridIntoMap(const cv::Mat& ego_grid,
                                         double anchor_x, double anchor_y, double anchor_yaw,
                                         cv::Mat& map_out) const {
