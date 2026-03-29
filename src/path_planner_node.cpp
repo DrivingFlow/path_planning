@@ -91,6 +91,7 @@ public:
         declare_parameter("planner_settings", std::string("0.1,0.1,0.2,50"));
 
         declare_parameter<std::string>("occ_data_mode", "live");
+        declare_parameter<bool>("overlay_live_scans_with_model", false);
         declare_parameter<double>("prediction_temperature", 1.0);
         declare_parameter<int>("num_predicted_frames", 5);
         declare_parameter<double>("model_occupancy_threshold", 0.5);
@@ -631,6 +632,7 @@ private:
         auto t_after_swap = std::chrono::high_resolution_clock::now();
 
         std::string mode = get_parameter("occ_data_mode").as_string();
+        bool overlay_live_scans_with_model = get_parameter("overlay_live_scans_with_model").as_bool();
         double z_min = get_parameter("z_min").as_double();
         double z_max = get_parameter("z_max").as_double();
 
@@ -656,6 +658,7 @@ private:
                 combined = bridge_.mergeWithStaticMap(live_grid);
                 publishLiveGrid(live_grid, "map", bridge_.xMin(), bridge_.yMin(), bridge_.resolution());
             } else if (mode == "map_frame_model") {
+                cv::Mat live_grid = bridge_.pointcloudToOccupancyGrid(live_pts, z_min, z_max);
                 if (have_pose) {
                     cv::Mat mf_grid = OccGridBridge::pointcloudToMapFrameOccupancyGrid201(
                         live_pts, start_x, start_y, z_min, z_max);
@@ -704,7 +707,12 @@ private:
                         }
                     }
                 }
+                if (overlay_live_scans_with_model && !live_grid.empty()) {
+                    combined = bridge_.mergeWithStaticMap(cv::max(combined, live_grid));
+                }
+                publishLiveGrid(live_grid, "map", bridge_.xMin(), bridge_.yMin(), bridge_.resolution());
             } else if (mode == "agent_centered_model") {
+                cv::Mat live_grid = bridge_.pointcloudToOccupancyGrid(live_pts, z_min, z_max);
                 if (have_pose) {
                     auto t_before_ego = std::chrono::high_resolution_clock::now();
                     cv::Mat ego_grid = OccGridBridge::pointcloudToEgoOccupancyGrid201(
@@ -767,6 +775,10 @@ private:
                         }
                     }
                 }
+                if (overlay_live_scans_with_model && !live_grid.empty()) {
+                    combined = bridge_.mergeWithStaticMap(cv::max(combined, live_grid));
+                }
+                publishLiveGrid(live_grid, "map", bridge_.xMin(), bridge_.yMin(), bridge_.resolution());
             } else {
                 cv::Mat live_grid = bridge_.pointcloudToOccupancyGrid(live_pts, z_min, z_max);
                 combined = bridge_.mergeWithStaticMap(live_grid);

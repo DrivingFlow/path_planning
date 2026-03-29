@@ -49,6 +49,7 @@ def generate_launch_description():
     planner_settings_str = LaunchConfiguration("planner_settings", default="0.1,0.1,0.2,50")
 
     occ_data_mode = LaunchConfiguration("occ_data_mode", default="live")
+    overlay_live_scans_with_model = LaunchConfiguration("overlay_live_scans_with_model", default="False")
     prediction_temperature = LaunchConfiguration("prediction_temperature", default="3.0")
     num_predicted_frames = LaunchConfiguration("num_predicted_frames", default="5")
     model_occupancy_threshold = LaunchConfiguration("model_occupancy_threshold", default="0.5")
@@ -136,6 +137,8 @@ def generate_launch_description():
             DeclareLaunchArgument("planner_settings", default_value="0.1,0.2,0.2,30"),
             # Occupancy data source: 'live' | 'map_frame_model' | 'agent_centered_model'
             DeclareLaunchArgument("occ_data_mode", default_value="live"),
+            # In model modes, overlay live lidar obstacles onto model predictions for a conservative union.
+            DeclareLaunchArgument("overlay_live_scans_with_model", default_value="False"),
             DeclareLaunchArgument("prediction_temperature", default_value="10000.0"),
             DeclareLaunchArgument("num_predicted_frames", default_value="5"),
             # Threshold for binarizing analog model output values (0-1 range) before scaling to 0-255
@@ -173,6 +176,7 @@ def generate_launch_description():
                         "planner": planner,
                         "planner_settings": planner_settings_str,
                         "occ_data_mode": occ_data_mode,
+                        "overlay_live_scans_with_model": overlay_live_scans_with_model,
                         "prediction_temperature": prediction_temperature,
                         "num_predicted_frames": num_predicted_frames,
                         "model_occupancy_threshold": model_occupancy_threshold,
