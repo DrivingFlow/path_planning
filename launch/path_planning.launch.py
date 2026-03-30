@@ -27,6 +27,7 @@ def generate_launch_description():
     planned_path_topic = LaunchConfiguration("planned_path_topic")
     waypoints_topic = LaunchConfiguration("waypoints_topic")
     occupancy_grid_topic = LaunchConfiguration("occupancy_grid_topic")
+    planner_status_topic = LaunchConfiguration("planner_status_topic")
 
     visualize = LaunchConfiguration("visualize")
     viz_rate = LaunchConfiguration("viz_rate")
@@ -99,6 +100,8 @@ def generate_launch_description():
             DeclareLaunchArgument("waypoints_topic", default_value="/waypoints"),
             # Topic name for publishing occupancy grid
             DeclareLaunchArgument("occupancy_grid_topic", default_value="/occupancy_grid"),
+            # Topic name for publishing planner status text for visualization
+            DeclareLaunchArgument("planner_status_topic", default_value="/planner_status"),
             # Enable visualization of path and occupancy grid (requires X display)
             DeclareLaunchArgument("visualize", default_value="False"),
             # Visualization update rate (Hz)
@@ -175,6 +178,7 @@ def generate_launch_description():
                         "goal_in_pixels": goal_in_pixels,
                         "planner": planner,
                         "planner_settings": planner_settings_str,
+                        "planner_status_topic": planner_status_topic,
                         "occ_data_mode": occ_data_mode,
                         "overlay_live_scans_with_model": overlay_live_scans_with_model,
                         "prediction_temperature": prediction_temperature,
@@ -237,6 +241,7 @@ def generate_launch_description():
                         "waypoints_topic": waypoints_topic,
                         "pose_topic": pose_topic,
                         "goal_topic": goal_topic,
+                        "planner_status_topic": planner_status_topic,
                         "rate": viz_rate,
                         "view_col_min": view_col_min,
                         "view_col_max": view_col_max,

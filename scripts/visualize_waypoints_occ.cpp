@@ -3,6 +3,7 @@
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <std_msgs/msg/string.hpp>
 
 #include <opencv2/opencv.hpp>
 
@@ -12,6 +13,7 @@
 #include <vector>
 #include <optional>
 #include <cmath>
+#include <sstream>
 #include <iostream>
 #include <cstdio>
 
@@ -37,6 +39,7 @@ public:
         std::string waypoints_topic = declare_parameter<std::string>("waypoints_topic", "/waypoints");
         std::string pose_topic = declare_parameter<std::string>("pose_topic", "/pcl_pose");
         std::string goal_topic = declare_parameter<std::string>("goal_topic", "/move_base_simple/goal");
+        std::string planner_status_topic = declare_parameter<std::string>("planner_status_topic", "/planner_status");
         rate_hz_ = declare_parameter<double>("rate", 10.0);
         view_col_min_ = declare_parameter<int>("view_col_min", -1);
         view_col_max_ = declare_parameter<int>("view_col_max", -1);
@@ -77,6 +80,13 @@ public:
                     onGoal(msg);
                 });
             pub_goal_ = create_publisher<geometry_msgs::msg::PoseStamped>(goal_topic, qos_be);
+        }
+        if (!planner_status_topic.empty()) {
+            sub_planner_status_ = create_subscription<std_msgs::msg::String>(
+                planner_status_topic, qos_be,
+                [this](const std_msgs::msg::String::SharedPtr msg) {
+                    onPlannerStatus(msg);
+                });
         }
 
         timer_ = create_wall_timer(
@@ -125,6 +135,11 @@ private:
     void onGoal(const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
         std::lock_guard<std::mutex> lock(mutex_);
         goal_pose_ = cv::Point2d(msg->pose.position.x, msg->pose.position.y);
+    }
+
+    void onPlannerStatus(const std_msgs::msg::String::SharedPtr msg) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        planner_status_text_ = msg->data;
     }
 
     bool worldToPixel(const OccData& occ, const cv::Point2d& w, cv::Point& p) const {
@@ -221,6 +236,7 @@ private:
         std::vector<cv::Point2d> waypoints;
         std::optional<cv::Point2d> robot;
         std::optional<cv::Point2d> goal;
+        std::string planner_status;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             occ = occ_;
@@ -228,6 +244,7 @@ private:
             waypoints = waypoint_poses_;
             robot = robot_pose_;
             goal = goal_pose_;
+            planner_status = planner_status_text_;
         }
 
         if (occ.width == 0 || occ.height == 0 || occ.data.empty()) {
@@ -598,6 +615,17 @@ private:
         } else {
             put_line("Goal x,y: unavailable");
         }
+        y += 8;
+        put_line("Planner status:", cv::Scalar(120, 40, 40));
+        if (!planner_status.empty()) {
+            std::istringstream ss(planner_status);
+            std::string line;
+            while (std::getline(ss, line)) {
+                if (!line.empty()) put_line(line);
+            }
+        } else {
+            put_line("No planner status yet");
+        }
 
         cv::Mat display;
         cv::hconcat(display_occ, side_panel, display);
@@ -627,12 +655,14 @@ private:
     std::vector<cv::Point2d> waypoint_poses_;
     std::optional<cv::Point2d> robot_pose_;
     std::optional<cv::Point2d> goal_pose_;
+    std::string planner_status_text_;
 
     rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr sub_occ_;
     rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr sub_path_;
     rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr sub_waypoints_;
     rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr sub_pose_;
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr sub_goal_;
+    rclcpp::Subscription<std_msgs::msg::String>::SharedPtr sub_planner_status_;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pub_goal_;
     rclcpp::TimerBase::SharedPtr timer_;
 

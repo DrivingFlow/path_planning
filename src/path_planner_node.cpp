@@ -15,6 +15,7 @@
 #include <nav_msgs/msg/path.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <std_msgs/msg/header.hpp>
+#include <std_msgs/msg/string.hpp>
 
 #include "path_planning/msg/occupancy_grid_array.hpp"
 #include "path_planning/msg/agent_centered_input.hpp"
@@ -27,6 +28,7 @@
 #include <cstring>
 #include <cmath>
 #include <chrono>
+#include <iomanip>
 #include <string>
 #include <sstream>
 
@@ -89,6 +91,7 @@ public:
         declare_parameter<bool>("goal_in_pixels", false);
         declare_parameter<std::string>("planner", "rrt");
         declare_parameter("planner_settings", std::string("0.1,0.1,0.2,50"));
+        declare_parameter<std::string>("planner_status_topic", "/planner_status");
 
         declare_parameter<std::string>("occ_data_mode", "live");
         declare_parameter<bool>("overlay_live_scans_with_model", false);
@@ -144,6 +147,8 @@ public:
         pub_waypoints_ = create_publisher<nav_msgs::msg::Path>("/waypoints", qos_be);
         pub_occ_grid_ = create_publisher<nav_msgs::msg::OccupancyGrid>("/occupancy_grid", qos_be);
         pub_live_grid_ = create_publisher<nav_msgs::msg::OccupancyGrid>("/live_obstacles", qos_volatile);
+        pub_planner_status_ = create_publisher<std_msgs::msg::String>(
+            get_parameter("planner_status_topic").as_string(), qos_be);
 
         bool model_mode = (mode == "agent_centered_model" || mode == "map_frame_model");
         int interval_ms = model_mode ? 100 : get_parameter("plan_interval_ms").as_int();
@@ -362,6 +367,30 @@ private:
             for (int c = 0; c < grid.cols; ++c)
                 occ_msg.data[static_cast<size_t>(r * grid.cols + c)] = (grid.at<uchar>(r, c) >= 50) ? 100 : 0;
         pub_live_grid_->publish(occ_msg);
+    }
+
+    void publishPlannerStatus(const std::string& planner_type,
+                              const std::string& status,
+                              const std::string& reason,
+                              size_t path_points,
+                              bool intersection,
+                              double planning_ms,
+                              double cycle_ms) {
+        if (!pub_planner_status_) return;
+        std_msgs::msg::String msg;
+        std::ostringstream ss;
+        ss << std::fixed << std::setprecision(1);
+        ss << "Planner: " << planner_type << "\n";
+        ss << "Status: " << status << "\n";
+        ss << "Reason: " << reason << "\n";
+        ss << "Path points: " << path_points << "\n";
+        ss << "Intersection: " << (intersection ? "yes" : "no") << "\n";
+        if (planning_ms >= 0.0) ss << "Planning: " << planning_ms << " ms\n";
+        else ss << "Planning: n/a\n";
+        if (cycle_ms >= 0.0) ss << "Cycle: " << cycle_ms << " ms";
+        else ss << "Cycle: n/a";
+        msg.data = ss.str();
+        pub_planner_status_->publish(msg);
     }
 
     cv::Mat cropMapAndCenterOnCanvas(const cv::Mat& full_grid,
@@ -820,7 +849,17 @@ private:
 
         publishOccupancyGrid(combined, "map", bridge_.xMin(), bridge_.yMin(), bridge_.resolution());
 
-        if (!have_pose || !have_goal) return;
+        std::string planner_type = get_parameter("planner").as_string();
+        auto cycle_ms_now = [&]() {
+            return std::chrono::duration<double, std::milli>(
+                std::chrono::high_resolution_clock::now() - t_cycle_start).count();
+        };
+
+        if (!have_pose || !have_goal) {
+            std::string reason = !have_pose ? "waiting_for_pose" : "waiting_for_goal";
+            publishPlannerStatus(planner_type, "idle", reason, current_path.size(), false, -1.0, cycle_ms_now());
+            return;
+        }
 
         double resolution = bridge_.resolution();
         double robot_radius_m = get_parameter("robot_radius").as_double();
@@ -828,7 +867,6 @@ private:
         double astar_corridor_half_width_m = get_parameter("astar_corridor_half_width").as_double();
         int astar_corridor_half_width_px = static_cast<int>(std::round(
             std::max(0.0, astar_corridor_half_width_m) / resolution));
-        std::string planner_type = get_parameter("planner").as_string();
         double required_clearance_px = static_cast<double>(robot_radius_px + astar_corridor_half_width_px);
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
             "planner=%s robot_radius=%.3f m (%d px), astar_half_width=%.3f m (%d px), required_clearance=%.1f px",
@@ -836,11 +874,15 @@ private:
             astar_corridor_half_width_m, astar_corridor_half_width_px, required_clearance_px);
 
         bool needs_replan = current_path.empty();
+        bool intersection_detected = false;
+        std::string replan_reason = current_path.empty() ? "no_current_path" : "tracking";
         if (!needs_replan) {
             double lookahead = get_parameter("replan_lookahead_distance").as_double();
             needs_replan = pathIntersectsObstacles(
                 current_path, start_x, start_y, combined, lookahead, required_clearance_px);
             if (needs_replan) {
+                intersection_detected = true;
+                replan_reason = "intersection";
                 RCLCPP_INFO(get_logger(), "Path intersects obstacles within %.2f m, replanning...", lookahead);
             }
         }
@@ -850,11 +892,16 @@ private:
                 double elapsed = (now() - last_plan_time_).seconds();
                 if (last_plan_time_.nanoseconds() == 0 || elapsed >= interval_sec) {
                     needs_replan = true;
+                    replan_reason = (last_plan_time_.nanoseconds() == 0) ? "initial_plan" : "periodic_replan";
                 }
             }
         }
 
-        if (!needs_replan) return;
+        if (!needs_replan) {
+            publishPlannerStatus(planner_type, "tracking", "path_clear", current_path.size(),
+                                 false, -1.0, cycle_ms_now());
+            return;
+        }
 
         int n_iter = get_parameter("rrt_iterations").as_int();
         double step_size_m = get_parameter("step_size").as_double();
@@ -880,13 +927,18 @@ private:
 
         if (start_col < 0 || start_col >= bridge_.gridWidth() || start_row < 0 || start_row >= bridge_.gridHeight()) {
             RCLCPP_WARN(get_logger(), "Start out of grid bounds.");
+            publishPlannerStatus(planner_type, "error", "start_out_of_bounds", current_path.size(),
+                                 intersection_detected, -1.0, cycle_ms_now());
             return;
         }
         if (goal_col < 0 || goal_col >= bridge_.gridWidth() || goal_row < 0 || goal_row >= bridge_.gridHeight()) {
             RCLCPP_WARN(get_logger(), "Goal out of grid bounds.");
+            publishPlannerStatus(planner_type, "error", "goal_out_of_bounds", current_path.size(),
+                                 intersection_detected, -1.0, cycle_ms_now());
             return;
         }
 
+        auto t_plan_start = std::chrono::high_resolution_clock::now();
         std::vector<cv::Point2i> path_idx;
         if (planner_type == "astar" || planner_type == "astar_energy") {
             std::vector<double> ps;
@@ -914,6 +966,8 @@ private:
                                              sample_col_min, sample_col_max, sample_row_min, sample_row_max);
             path_idx = planner.plan(start_g, goal_g, n_iter, false, false);
         }
+        double planning_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::high_resolution_clock::now() - t_plan_start).count();
 
         if (path_idx.empty()) {
             RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "%s found no path. Publishing stop-in-place.",
@@ -936,6 +990,8 @@ private:
                 current_path_ = {{{start_x, start_y}}};
             }
             last_plan_time_ = now();
+            publishPlannerStatus(planner_type, "no_path", replan_reason, 1,
+                                 intersection_detected, planning_ms, cycle_ms_now());
             return;
         }
 
@@ -968,6 +1024,8 @@ private:
 
         last_plan_time_ = now();
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Published %zu waypoints.", waypoints.size());
+        publishPlannerStatus(planner_type, "path_found", replan_reason, waypoints.size(),
+                             intersection_detected, planning_ms, cycle_ms_now());
     }
 
     OccGridBridge bridge_;
@@ -978,6 +1036,7 @@ private:
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pub_waypoints_;
     rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr pub_occ_grid_;
     rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr pub_live_grid_;
+    rclcpp::Publisher<std_msgs::msg::String>::SharedPtr pub_planner_status_;
     rclcpp::Publisher<path_planning::msg::AgentCenteredInput>::SharedPtr pub_model_input_;
     rclcpp::Subscription<path_planning::msg::OccupancyGridArray>::SharedPtr sub_model_output_;
     rclcpp::Subscription<path_planning::msg::AgentCenteredInput>::SharedPtr sub_model_output_agent_;
