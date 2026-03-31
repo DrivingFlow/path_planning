@@ -28,6 +28,7 @@
 #include <cstring>
 #include <cmath>
 #include <chrono>
+#include <algorithm>
 #include <iomanip>
 #include <string>
 #include <sstream>
@@ -102,6 +103,14 @@ public:
         declare_parameter<std::string>("model_predicted_output_topic", "/map_updater/predicted_grid_output");
         declare_parameter<int>("agent_frame_stride", 5);
         declare_parameter<int>("plan_interval_ms", 100);
+        // Waypoint spacing in meters for resampling planner output (arc-length)
+        declare_parameter<double>("waypoint_spacing", 0.4);
+        // Local replanning toggle: if true, intersection-triggered replans only replan within local_replan_radius
+        declare_parameter<bool>("local_replan_enabled", false);
+        // Radius (m) for local replanning: only replan path within this distance from robot
+        declare_parameter<double>("local_replan_radius", 5.0);
+        // Maximum distance (m) from robot for live scan points; 0 = no limit
+        declare_parameter<double>("live_scan_radius", 0.0);
 
         std::string map_pcd = get_parameter("map_pcd_path").as_string();
         std::string map_png = get_parameter("map_png_path").as_string();
@@ -233,6 +242,7 @@ private:
         goal_x_ = msg->pose.position.x;
         goal_y_ = msg->pose.position.y;
         have_goal_ = true;
+        goal_changed_ = true;
         RCLCPP_INFO(get_logger(), "Received goal pose: x=%.3f, y=%.3f", goal_x_, goal_y_);
     }
 
@@ -528,13 +538,32 @@ private:
         return msg;
     }
 
-    bool pathIntersectsObstacles(const std::vector<std::array<double, 2>>& path_world,
-                                 double robot_x, double robot_y,
-                                 const cv::Mat& occupancy_grid,
-                                 double lookahead_distance,
-                                 double required_clearance_px) const {
-        if (path_world.empty()) return false;
-        const double resolution = bridge_.resolution();
+    WaypointArray resampleWaypointsWorld(const WaypointArray& path, double spacing) const {
+        if (path.size() < 2 || spacing <= 0) return path;
+        std::vector<double> arc(path.size(), 0.0);
+        for (size_t i = 1; i < path.size(); ++i) {
+            double dx = path[i][0] - path[i - 1][0];
+            double dy = path[i][1] - path[i - 1][1];
+            arc[i] = arc[i - 1] + std::sqrt(dx * dx + dy * dy);
+        }
+        double total = arc.back();
+        if (total < 1e-9) return path;
+        WaypointArray out;
+        out.push_back(path.front());
+        size_t seg = 0;
+        for (double s = spacing; s < total; s += spacing) {
+            while (seg + 1 < arc.size() - 1 && arc[seg + 1] < s) ++seg;
+            double seg_len = std::max(arc[seg + 1] - arc[seg], 1e-9);
+            double t = (s - arc[seg]) / seg_len;
+            double x = path[seg][0] + t * (path[seg + 1][0] - path[seg][0]);
+            double y = path[seg][1] + t * (path[seg + 1][1] - path[seg][1]);
+            out.push_back({{x, y}});
+        }
+        out.push_back(path.back());
+        return out;
+    }
+
+    cv::Mat computeDistanceTransform(const cv::Mat& occupancy_grid) const {
         cv::Mat binary_inv(occupancy_grid.rows, occupancy_grid.cols, CV_8UC1);
         for (int r = 0; r < occupancy_grid.rows; ++r) {
             const uchar* src = occupancy_grid.ptr<uchar>(r);
@@ -546,6 +575,16 @@ private:
         cv::Mat dist;
         cv::distanceTransform(binary_inv, dist, cv::DIST_L2, cv::DIST_MASK_PRECISE);
         dist.convertTo(dist, CV_64F);
+        return dist;
+    }
+
+    bool pathIntersectsObstacles(const std::vector<std::array<double, 2>>& path_world,
+                                 double robot_x, double robot_y,
+                                 const cv::Mat& dist,
+                                 double lookahead_distance,
+                                 double required_clearance_px) const {
+        if (path_world.empty()) return false;
+        const double resolution = bridge_.resolution();
 
         double cumulative_dist = 0.0;
         const Eigen::Vector2d robot(robot_x, robot_y);
@@ -582,7 +621,7 @@ private:
                 double t = static_cast<double>(j) / num_samples;
                 int col = static_cast<int>(col0 + t * (col1 - col0));
                 int row = static_cast<int>(row0 + t * (row1 - row0));
-                if (col >= 0 && col < occupancy_grid.cols && row >= 0 && row < occupancy_grid.rows) {
+                if (col >= 0 && col < dist.cols && row >= 0 && row < dist.rows) {
                     if (dist.at<double>(row, col) <= required_clearance_px) return true;
                 }
             }
@@ -625,6 +664,7 @@ private:
 
         std::vector<std::array<float, 3>> live_pts;
         bool has_new_lidar_data = false;
+        bool goal_changed = false;
         double start_x, start_y, goal_x, goal_y;
         double start_z, start_roll, start_pitch, start_yaw;
         bool have_pose, have_goal;
@@ -638,6 +678,8 @@ private:
                 live_points_staging_.swap(live_points_);
                 new_lidar_data_ = false;
             }
+            goal_changed = goal_changed_;
+            goal_changed_ = false;
             start_x = start_x_;
             start_y = start_y_;
             start_z = start_z_;
@@ -669,6 +711,18 @@ private:
             if (have_pose) {
                 live_pts = transformPointsToMap(live_pts, start_x, start_y, start_z,
                                                 start_roll, start_pitch, start_yaw);
+                double live_scan_radius = get_parameter("live_scan_radius").as_double();
+                if (live_scan_radius > 0.0) {
+                    double r2 = live_scan_radius * live_scan_radius;
+                    float sx = static_cast<float>(start_x);
+                    float sy = static_cast<float>(start_y);
+                    auto it = std::remove_if(live_pts.begin(), live_pts.end(),
+                        [sx, sy, r2](const std::array<float, 3>& p) {
+                            float dx = p[0] - sx, dy = p[1] - sy;
+                            return (dx * dx + dy * dy) > static_cast<float>(r2);
+                        });
+                    live_pts.erase(it, live_pts.end());
+                }
             } else {
                 live_pts.clear();
             }
@@ -875,17 +929,35 @@ private:
 
         bool needs_replan = current_path.empty();
         bool intersection_detected = false;
+        bool is_local_replan = false;
         std::string replan_reason = current_path.empty() ? "no_current_path" : "tracking";
-        if (!needs_replan) {
+
+        // Immediate replan: new goal received
+        if (!needs_replan && goal_changed) {
+            needs_replan = true;
+            replan_reason = "new_goal";
+            RCLCPP_INFO(get_logger(), "New goal received, replanning immediately.");
+        }
+        // Immediate replan: intersection within lookahead
+        // Only compute the expensive distance transform when we actually need intersection checking
+        cv::Mat dist_map;
+        if (!needs_replan && !current_path.empty() && !combined.empty()) {
+            dist_map = computeDistanceTransform(combined);
+        }
+        if (!needs_replan && !dist_map.empty()) {
             double lookahead = get_parameter("replan_lookahead_distance").as_double();
             needs_replan = pathIntersectsObstacles(
-                current_path, start_x, start_y, combined, lookahead, required_clearance_px);
+                current_path, start_x, start_y, dist_map, lookahead, required_clearance_px);
             if (needs_replan) {
                 intersection_detected = true;
                 replan_reason = "intersection";
-                RCLCPP_INFO(get_logger(), "Path intersects obstacles within %.2f m, replanning...", lookahead);
+                bool local_enabled = get_parameter("local_replan_enabled").as_bool();
+                if (local_enabled) is_local_replan = true;
+                RCLCPP_INFO(get_logger(), "Path intersects obstacles within %.2f m, replanning %s...",
+                    lookahead, is_local_replan ? "locally" : "globally");
             }
         }
+        // Periodic replan (lower priority)
         if (!needs_replan) {
             double interval_sec = get_parameter("replan_interval_sec").as_double();
             if (interval_sec > 0.0) {
@@ -913,13 +985,43 @@ private:
         int sample_row_max = get_parameter("sample_row_max").as_int();
         bool goal_in_pixels = get_parameter("goal_in_pixels").as_bool();
 
+        // Determine planning goal: for local replan, use a point along the existing path
+        double local_replan_radius = get_parameter("local_replan_radius").as_double();
+        double local_goal_x = goal_x, local_goal_y = goal_y;
+        size_t splice_idx = 0;
+        if (is_local_replan && !current_path.empty()) {
+            const Eigen::Vector2d robot(start_x, start_y);
+            size_t closest_idx = 0;
+            double min_d2 = 1e30;
+            for (size_t i = 0; i < current_path.size(); ++i) {
+                Eigen::Vector2d p(current_path[i][0], current_path[i][1]);
+                double d2 = (p - robot).squaredNorm();
+                if (d2 < min_d2) { min_d2 = d2; closest_idx = i; }
+            }
+            double cum = 0.0;
+            splice_idx = current_path.size() - 1;
+            for (size_t i = closest_idx; i + 1 < current_path.size(); ++i) {
+                Eigen::Vector2d p0(current_path[i][0], current_path[i][1]);
+                Eigen::Vector2d p1(current_path[i + 1][0], current_path[i + 1][1]);
+                cum += (p1 - p0).norm();
+                if (cum >= local_replan_radius) {
+                    splice_idx = i + 1;
+                    break;
+                }
+            }
+            local_goal_x = current_path[splice_idx][0];
+            local_goal_y = current_path[splice_idx][1];
+            RCLCPP_INFO(get_logger(), "Local replan: goal at path[%zu] (%.3f, %.3f), radius=%.2f m",
+                splice_idx, local_goal_x, local_goal_y, local_replan_radius);
+        }
+
         int start_col, start_row, goal_col, goal_row;
         bridge_.worldToGrid(start_x, start_y, start_col, start_row);
-        if (goal_in_pixels) {
-            goal_col = static_cast<int>(std::round(goal_x));
-            goal_row = static_cast<int>(std::round(goal_y));
+        if (!is_local_replan && goal_in_pixels) {
+            goal_col = static_cast<int>(std::round(local_goal_x));
+            goal_row = static_cast<int>(std::round(local_goal_y));
         } else {
-            bridge_.worldToGrid(goal_x, goal_y, goal_col, goal_row);
+            bridge_.worldToGrid(local_goal_x, local_goal_y, goal_col, goal_row);
         }
 
         cv::Point2f start_g(static_cast<float>(start_col), static_cast<float>(start_row));
@@ -995,11 +1097,23 @@ private:
             return;
         }
 
-        WaypointArray waypoints;
+        // Convert grid indices to world coordinates
+        WaypointArray raw_waypoints;
         for (const auto& pt : path_idx) {
             double x, y;
             bridge_.gridToWorld(pt.x, pt.y, x, y);
-            waypoints.push_back({{x, y}});
+            raw_waypoints.push_back({{x, y}});
+        }
+
+        // Resample to uniform waypoint_spacing in world space
+        double wp_spacing = get_parameter("waypoint_spacing").as_double();
+        WaypointArray waypoints = resampleWaypointsWorld(raw_waypoints, wp_spacing);
+
+        // If local replan, splice with the tail of the original path
+        if (is_local_replan && splice_idx + 1 < current_path.size()) {
+            for (size_t i = splice_idx + 1; i < current_path.size(); ++i) {
+                waypoints.push_back(current_path[i]);
+            }
         }
 
         nav_msgs::msg::Path path_msg;
@@ -1023,7 +1137,8 @@ private:
         }
 
         last_plan_time_ = now();
-        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Published %zu waypoints.", waypoints.size());
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Published %zu waypoints (raw %zu, spacing %.2f m)%s.",
+            waypoints.size(), raw_waypoints.size(), wp_spacing, is_local_replan ? " [local]" : "");
         publishPlannerStatus(planner_type, "path_found", replan_reason, waypoints.size(),
                              intersection_detected, planning_ms, cycle_ms_now());
     }
@@ -1050,6 +1165,7 @@ private:
     double start_z_ = 0;
     double start_roll_ = 0, start_pitch_ = 0, start_yaw_ = 0;
     bool have_pose_ = false, have_goal_ = false;
+    bool goal_changed_ = false;
     std::vector<std::array<double, 2>> current_path_;
     rclcpp::Time last_plan_time_{0};
     cv::Mat cached_combined_grid_;

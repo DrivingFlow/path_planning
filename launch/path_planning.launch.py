@@ -20,6 +20,10 @@ def generate_launch_description():
     rrt_goal_sample_rate = LaunchConfiguration("rrt_goal_sample_rate")
     replan_lookahead_distance = LaunchConfiguration("replan_lookahead_distance")
     replan_interval_sec = LaunchConfiguration("replan_interval_sec")
+    waypoint_spacing = LaunchConfiguration("waypoint_spacing")
+    local_replan_enabled = LaunchConfiguration("local_replan_enabled")
+    local_replan_radius = LaunchConfiguration("local_replan_radius")
+    live_scan_radius = LaunchConfiguration("live_scan_radius")
 
     lidar_topic = LaunchConfiguration("lidar_topic")
     pose_topic = LaunchConfiguration("pose_topic")
@@ -86,8 +90,16 @@ def generate_launch_description():
             DeclareLaunchArgument("rrt_goal_sample_rate", default_value="0.05"),
             # Lookahead distance for replanning (meters)
             DeclareLaunchArgument("replan_lookahead_distance", default_value="4.0"),
-            # Time interval between replanning updates (seconds)
-            DeclareLaunchArgument("replan_interval_sec", default_value="1.0"),
+            # Time interval between periodic replanning (seconds); 0 = disable periodic replan
+            DeclareLaunchArgument("replan_interval_sec", default_value="10.0"),
+            # Waypoint spacing (meters) for arc-length resampling of planner output
+            DeclareLaunchArgument("waypoint_spacing", default_value="0.4"),
+            # Enable local replanning: intersection-triggered replans only affect path within local_replan_radius
+            DeclareLaunchArgument("local_replan_enabled", default_value="False"),
+            # Radius (meters) for local replanning around robot position
+            DeclareLaunchArgument("local_replan_radius", default_value="5.0"),
+            # Maximum distance (meters) from robot for live scan points; 0 = no limit (use all points)
+            DeclareLaunchArgument("live_scan_radius", default_value="5.0"),
             # Topic name for LIDAR point cloud input
             DeclareLaunchArgument("lidar_topic", default_value="/livox/lidar"),
             # Topic name for robot pose input
@@ -171,6 +183,10 @@ def generate_launch_description():
                         "rrt_goal_sample_rate": rrt_goal_sample_rate,
                         "replan_lookahead_distance": replan_lookahead_distance,
                         "replan_interval_sec": replan_interval_sec,
+                        "waypoint_spacing": waypoint_spacing,
+                        "local_replan_enabled": local_replan_enabled,
+                        "local_replan_radius": local_replan_radius,
+                        "live_scan_radius": live_scan_radius,
                         "sample_col_min": sample_col_min,
                         "sample_col_max": sample_col_max,
                         "sample_row_min": sample_row_min,
