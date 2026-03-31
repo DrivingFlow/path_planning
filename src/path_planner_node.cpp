@@ -927,10 +927,24 @@ private:
             planner_type.c_str(), robot_radius_m, robot_radius_px,
             astar_corridor_half_width_m, astar_corridor_half_width_px, required_clearance_px);
 
-        bool needs_replan = current_path.empty();
+        bool goal_in_pixels = get_parameter("goal_in_pixels").as_bool();
+        double goal_world_x = goal_x;
+        double goal_world_y = goal_y;
+        if (goal_in_pixels) {
+            int goal_col_world = static_cast<int>(std::round(goal_x));
+            int goal_row_world = static_cast<int>(std::round(goal_y));
+            bridge_.gridToWorld(goal_col_world, goal_row_world, goal_world_x, goal_world_y);
+        }
+        double goal_reached_tol = std::max(robot_radius_m, resolution);
+        bool single_stop_point_not_at_goal =
+            current_path.size() == 1 &&
+            std::hypot(goal_world_x - start_x, goal_world_y - start_y) > goal_reached_tol;
+
+        bool needs_replan = current_path.empty() || single_stop_point_not_at_goal;
         bool intersection_detected = false;
         bool is_local_replan = false;
-        std::string replan_reason = current_path.empty() ? "no_current_path" : "tracking";
+        std::string replan_reason =
+            (current_path.empty() || single_stop_point_not_at_goal) ? "no_current_path" : "tracking";
 
         // Immediate replan: new goal received
         if (!needs_replan && goal_changed) {
@@ -983,8 +997,6 @@ private:
         int sample_col_max = get_parameter("sample_col_max").as_int();
         int sample_row_min = get_parameter("sample_row_min").as_int();
         int sample_row_max = get_parameter("sample_row_max").as_int();
-        bool goal_in_pixels = get_parameter("goal_in_pixels").as_bool();
-
         // Determine planning goal: for local replan, use a point along the existing path
         double local_replan_radius = get_parameter("local_replan_radius").as_double();
         double local_goal_x = goal_x, local_goal_y = goal_y;
