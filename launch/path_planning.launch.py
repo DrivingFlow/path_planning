@@ -14,6 +14,7 @@ def generate_launch_description():
     robot_radius = LaunchConfiguration("robot_radius")
     origin_crop_radius = LaunchConfiguration("origin_crop_radius")
     origin_crop_forward_offset = LaunchConfiguration("origin_crop_forward_offset")
+    crop_origin_in_model_input = LaunchConfiguration("crop_origin_in_model_input")
     astar_corridor_half_width = LaunchConfiguration("astar_corridor_half_width")
     rrt_iterations = LaunchConfiguration("rrt_iterations")
     step_size = LaunchConfiguration("step_size")
@@ -80,6 +81,8 @@ def generate_launch_description():
             DeclareLaunchArgument("origin_crop_radius", default_value="0.06"),
             # Forward offset (meters) of crop circle center from robot origin along +x.
             DeclareLaunchArgument("origin_crop_forward_offset", default_value="0.20"),
+            # If true, apply the origin crop to model input frames before inference; if false, crop only after fusion.
+            DeclareLaunchArgument("crop_origin_in_model_input", default_value="False"),
             # A* only: additional corridor half-width around centerline (meters)
             DeclareLaunchArgument("astar_corridor_half_width", default_value="0.0"),
             # Number of RRT iterations for path planning
@@ -177,6 +180,7 @@ def generate_launch_description():
                         "robot_radius": robot_radius,
                         "origin_crop_radius": origin_crop_radius,
                         "origin_crop_forward_offset": origin_crop_forward_offset,
+                        "crop_origin_in_model_input": crop_origin_in_model_input,
                         "astar_corridor_half_width": astar_corridor_half_width,
                         "rrt_iterations": rrt_iterations,
                         "step_size": step_size,

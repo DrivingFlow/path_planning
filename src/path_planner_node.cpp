@@ -102,6 +102,9 @@ public:
         declare_parameter<std::string>("model_occ_input_topic", "/map_updater/occ_grid_input");
         declare_parameter<std::string>("model_predicted_output_topic", "/map_updater/predicted_grid_output");
         declare_parameter<int>("agent_frame_stride", 5);
+        // If true, apply the origin crop to the 201x201 frame before sending it to the model.
+        // If false, only the post-fusion crop on the final combined map is used.
+        declare_parameter<bool>("crop_origin_in_model_input", false);
         declare_parameter<int>("plan_interval_ms", 100);
         // Waypoint spacing in meters for resampling planner output (arc-length)
         declare_parameter<double>("waypoint_spacing", 0.4);
@@ -169,6 +172,53 @@ public:
     }
 
 private:
+    void clearCircularRegion(cv::Mat& grid, int center_col, int center_row, int radius_px) const {
+        if (grid.empty() || radius_px < 0) return;
+        int r_min = std::max(0, center_row - radius_px);
+        int r_max = std::min(grid.rows - 1, center_row + radius_px);
+        int c_min = std::max(0, center_col - radius_px);
+        int c_max = std::min(grid.cols - 1, center_col + radius_px);
+        double r2 = static_cast<double>(radius_px) * radius_px;
+        for (int r = r_min; r <= r_max; ++r) {
+            for (int c = c_min; c <= c_max; ++c) {
+                double dr = r - center_row;
+                double dc = c - center_col;
+                if (dr * dr + dc * dc <= r2) {
+                    grid.at<uchar>(r, c) = 0;
+                }
+            }
+        }
+    }
+
+    void applyOriginCropToMapGrid(cv::Mat& grid,
+                                  double start_x, double start_y, double start_yaw,
+                                  double crop_radius_m, double fwd_offset_m) const {
+        if (grid.empty() || crop_radius_m <= 0.0) return;
+        double crop_cx = start_x + fwd_offset_m * std::cos(start_yaw);
+        double crop_cy = start_y + fwd_offset_m * std::sin(start_yaw);
+        int center_col, center_row;
+        bridge_.worldToGrid(crop_cx, crop_cy, center_col, center_row);
+        int crop_radius_px = static_cast<int>(std::ceil(crop_radius_m / bridge_.resolution()));
+        clearCircularRegion(grid, center_col, center_row, crop_radius_px);
+    }
+
+    void applyOriginCropToCentered201Grid(cv::Mat& grid,
+                                          double crop_radius_m,
+                                          double fwd_offset_m,
+                                          double start_yaw,
+                                          bool ego_aligned) const {
+        if (grid.empty() || crop_radius_m <= 0.0) return;
+        double dx = ego_aligned ? fwd_offset_m : fwd_offset_m * std::cos(start_yaw);
+        double dy = ego_aligned ? 0.0 : fwd_offset_m * std::sin(start_yaw);
+        double res = OccGridBridge::egoGridResolution();
+        double ox = OccGridBridge::egoGridOriginX();
+        double oy = OccGridBridge::egoGridOriginY();
+        int center_col = static_cast<int>(std::round((dx - ox) / res));
+        int center_row = static_cast<int>(std::round((oy - dy) / res));
+        int crop_radius_px = static_cast<int>(std::ceil(crop_radius_m / res));
+        clearCircularRegion(grid, center_col, center_row, crop_radius_px);
+    }
+
     void initBridge(const std::string& map_pcd, const std::string& map_png) {
         double res = get_parameter("resolution").as_double();
         if (!bridge_.loadMapPcd(map_pcd, res)) {
@@ -704,8 +754,11 @@ private:
 
         std::string mode = get_parameter("occ_data_mode").as_string();
         bool overlay_live_scans_with_model = get_parameter("overlay_live_scans_with_model").as_bool();
+        bool crop_origin_in_model_input = get_parameter("crop_origin_in_model_input").as_bool();
         double z_min = get_parameter("z_min").as_double();
         double z_max = get_parameter("z_max").as_double();
+        double crop_radius_m = get_parameter("origin_crop_radius").as_double();
+        double crop_fwd_offset_m = get_parameter("origin_crop_forward_offset").as_double();
 
         if (has_new_lidar_data) {
             if (have_pose) {
@@ -745,6 +798,10 @@ private:
                 if (have_pose) {
                     cv::Mat mf_grid = OccGridBridge::pointcloudToMapFrameOccupancyGrid201(
                         live_pts, start_x, start_y, z_min, z_max);
+                    if (crop_origin_in_model_input) {
+                        applyOriginCropToCentered201Grid(
+                            mf_grid, crop_radius_m, crop_fwd_offset_m, start_yaw, false);
+                    }
                     EgoFrame frame;
                     frame.grid = mf_grid;
                     frame.x = start_x;
@@ -800,6 +857,10 @@ private:
                     auto t_before_ego = std::chrono::high_resolution_clock::now();
                     cv::Mat ego_grid = OccGridBridge::pointcloudToEgoOccupancyGrid201(
                         live_pts, start_x, start_y, start_yaw, z_min, z_max);
+                    if (crop_origin_in_model_input) {
+                        applyOriginCropToCentered201Grid(
+                            ego_grid, crop_radius_m, crop_fwd_offset_m, start_yaw, true);
+                    }
                     auto t_after_ego = std::chrono::high_resolution_clock::now();
                     EgoFrame frame;
                     frame.grid = ego_grid;
@@ -877,28 +938,8 @@ private:
             "Combined grid: %d x %d (mode=%s)", combined.cols, combined.rows, mode.c_str());
 
         // Clear obstacles within origin_crop_radius of a point offset forward from the robot origin
-        double crop_radius_m = get_parameter("origin_crop_radius").as_double();
         if (have_pose && crop_radius_m > 0.0 && !combined.empty()) {
-            double fwd_offset = get_parameter("origin_crop_forward_offset").as_double();
-            double crop_cx = start_x + fwd_offset * std::cos(start_yaw);
-            double crop_cy = start_y + fwd_offset * std::sin(start_yaw);
-            double res = bridge_.resolution();
-            int crop_radius_px = static_cast<int>(std::ceil(crop_radius_m / res));
-            int center_col, center_row;
-            bridge_.worldToGrid(crop_cx, crop_cy, center_col, center_row);
-            int r_min = std::max(0, center_row - crop_radius_px);
-            int r_max = std::min(combined.rows - 1, center_row + crop_radius_px);
-            int c_min = std::max(0, center_col - crop_radius_px);
-            int c_max = std::min(combined.cols - 1, center_col + crop_radius_px);
-            double r2 = static_cast<double>(crop_radius_px) * crop_radius_px;
-            for (int r = r_min; r <= r_max; ++r) {
-                for (int c = c_min; c <= c_max; ++c) {
-                    double dr = r - center_row;
-                    double dc = c - center_col;
-                    if (dr * dr + dc * dc <= r2)
-                        combined.at<uchar>(r, c) = 0;
-                }
-            }
+            applyOriginCropToMapGrid(combined, start_x, start_y, start_yaw, crop_radius_m, crop_fwd_offset_m);
         }
 
         publishOccupancyGrid(combined, "map", bridge_.xMin(), bridge_.yMin(), bridge_.resolution());

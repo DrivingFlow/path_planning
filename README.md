@@ -58,6 +58,7 @@ source install/setup.bash
 | `robot_radius` | double | `0.15` | Robot radius in meters for obstacle inflation during collision checking. |
 | `origin_crop_radius` | double | `0.06` | Radius (meters) of a circle around the robot to crop out self-observed obstacles (e.g. wifi adapter). 0 = disabled. |
 | `origin_crop_forward_offset` | double | `0.20` | Forward offset (meters) of the crop circle center from the robot origin along +x (robot forward). |
+| `crop_origin_in_model_input` | bool | `False` | In model modes, apply the same origin crop to the 201×201 frame before it is sent to the model. When false, origin cropping is only applied after fusion on the final combined map. |
 
 ### Planner Selection
 
