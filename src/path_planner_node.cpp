@@ -42,6 +42,7 @@
 #include "occ_grid_bridge.hpp"
 #include "rrt_planner.hpp"
 #include "astar_energy_planner.hpp"
+#include "model_worker.hpp"
 
 // Placeholder: replace with your waypoint message type if different (e.g. nav_msgs/Path or custom)
 using WaypointArray = std::vector<std::array<double, 2>>;
@@ -102,9 +103,14 @@ public:
         declare_parameter<std::string>("model_occ_input_topic", "/map_updater/occ_grid_input");
         declare_parameter<std::string>("model_predicted_output_topic", "/map_updater/predicted_grid_output");
         declare_parameter<int>("agent_frame_stride", 5);
+        declare_parameter<double>("max_prediction_age_ms", 250.0);
+        declare_parameter<bool>("use_in_process_model", false);
+        declare_parameter<std::string>("model_script_path", "");
         // If true, apply the origin crop to the 201x201 frame before sending it to the model.
         // If false, only the post-fusion crop on the final combined map is used.
         declare_parameter<bool>("crop_origin_in_model_input", false);
+        // Minimum obstacle size (pixels) to trigger intersection-based replanning; smaller blobs are ignored. 0 = disabled.
+        declare_parameter<int>("min_replan_obstacle_size", 0);
         declare_parameter<int>("plan_interval_ms", 100);
         // Waypoint spacing in meters for resampling planner output (arc-length)
         declare_parameter<double>("waypoint_spacing", 0.4);
@@ -143,16 +149,31 @@ public:
             });
 
         std::string mode = get_parameter("occ_data_mode").as_string();
+        bool use_in_process = get_parameter("use_in_process_model").as_bool();
         if (mode == "map_frame_model" || mode == "agent_centered_model") {
-            std::string input_topic = get_parameter("model_occ_input_topic").as_string();
-            std::string output_topic = get_parameter("model_predicted_output_topic").as_string();
-            rclcpp::QoS qos_model(1);
-            qos_model.best_effort().durability_volatile();
-            pub_model_input_ = create_publisher<path_planning::msg::AgentCenteredInput>(input_topic, qos_model);
-            sub_model_output_agent_ = create_subscription<path_planning::msg::AgentCenteredInput>(
-                output_topic, qos_model, [this](const path_planning::msg::AgentCenteredInput::SharedPtr msg) {
-                    onPredictedAgentCentered(msg);
-                });
+            if (use_in_process) {
+                std::string script_path = get_parameter("model_script_path").as_string();
+                if (script_path.empty()) {
+                    RCLCPP_ERROR(get_logger(), "use_in_process_model=true but model_script_path is empty!");
+                } else {
+                    auto log_fn = [this](const std::string& msg) {
+                        RCLCPP_INFO(get_logger(), "[ModelWorker] %s", msg.c_str());
+                    };
+                    model_worker_ = std::make_unique<ModelWorker>(script_path, true, log_fn);
+                    RCLCPP_INFO(get_logger(), "In-process model inference enabled (TorchScript)");
+                }
+            } else {
+                std::string input_topic = get_parameter("model_occ_input_topic").as_string();
+                std::string output_topic = get_parameter("model_predicted_output_topic").as_string();
+                rclcpp::QoS qos_model(1);
+                qos_model.best_effort().durability_volatile();
+                pub_model_input_ = create_publisher<path_planning::msg::AgentCenteredInput>(input_topic, qos_model);
+                sub_model_output_agent_ = create_subscription<path_planning::msg::AgentCenteredInput>(
+                    output_topic, qos_model, [this](const path_planning::msg::AgentCenteredInput::SharedPtr msg) {
+                        onPredictedAgentCentered(msg);
+                    });
+                RCLCPP_INFO(get_logger(), "External model inference via ROS topics");
+            }
         }
 
         pub_path_ = create_publisher<nav_msgs::msg::Path>("/planned_path", qos_be);
@@ -304,6 +325,54 @@ private:
     void onPredictedAgentCentered(const path_planning::msg::AgentCenteredInput::SharedPtr msg) {
         std::lock_guard<std::mutex> lock(mutex_);
         last_predicted_agent_ = msg;
+        last_pred_receive_time_ = std::chrono::steady_clock::now();
+        have_pred_receive_time_ = true;
+        last_pred_input_stamp_ = rclcpp::Time(msg->header.stamp);
+        have_pred_input_stamp_ = true;
+        if (!msg->motion_forward_speed.empty()) {
+            last_model_inference_ms_ = msg->motion_forward_speed[0];
+        }
+    }
+
+    void logPredictionLatency(const char* mode_label,
+                              bool have_recv, std::chrono::steady_clock::time_point recv_time,
+                              bool have_input_stamp, const rclcpp::Time& input_stamp,
+                              float model_inference_ms,
+                              std::chrono::high_resolution_clock::time_point cycle_start) {
+        using MsS = std::chrono::duration<double, std::milli>;
+        auto t_now_steady = std::chrono::steady_clock::now();
+
+        double pred_age_ms = -1.0;
+        if (have_recv) {
+            pred_age_ms = std::chrono::duration_cast<MsS>(t_now_steady - recv_time).count();
+        }
+
+        double round_trip_ms = -1.0;
+        if (have_input_stamp) {
+            try {
+                double elapsed_sec = (now() - input_stamp).seconds();
+                round_trip_ms = elapsed_sec * 1000.0;
+            } catch (...) {
+                round_trip_ms = -1.0;
+            }
+        }
+
+        double lidar_pred_lag_ms = -1.0;
+        if (have_recv && have_lidar_process_time_) {
+            lidar_pred_lag_ms = std::chrono::duration_cast<MsS>(
+                last_lidar_process_time_ - recv_time).count();
+        }
+
+        double cycle_elapsed_ms = std::chrono::duration_cast<MsS>(
+            std::chrono::high_resolution_clock::now() - cycle_start).count();
+
+        RCLCPP_INFO(get_logger(),
+            "[%s LATENCY] round_trip=%.0fms (input_stamp->now) | "
+            "model_infer=%.0fms | pred_age=%.0fms (recv->consume) | "
+            "lidar_vs_pred=%.0fms (>0 = pred older than lidar) | "
+            "cycle_elapsed=%.0fms",
+            mode_label, round_trip_ms, model_inference_ms, pred_age_ms,
+            lidar_pred_lag_ms, cycle_elapsed_ms);
     }
 
     static std::vector<double> boltmannWeights(int n, double T) {
@@ -588,6 +657,52 @@ private:
         return msg;
     }
 
+    void submitToModelWorker(const std::deque<EgoFrame>& queue) {
+        if (!model_worker_ || queue.size() != 5u) return;
+        const int sz = OccGridBridge::EGO_GRID_SIZE;
+
+        std::vector<cv::Mat> grids(5), deltas(5);
+        for (int i = 0; i < 5; ++i)
+            grids[i] = queue[i].grid;
+
+        // delta_0 is zeros; delta_i = occ_i - occ_{i-1}
+        deltas[0] = cv::Mat::zeros(sz, sz, CV_8UC1);
+        for (int i = 1; i < 5; ++i) {
+            deltas[i] = cv::Mat(sz, sz, CV_8UC1);
+            for (int r = 0; r < sz; ++r) {
+                const uchar* curr = grids[i].ptr<uchar>(r);
+                const uchar* prev = grids[i - 1].ptr<uchar>(r);
+                uchar* dst = deltas[i].ptr<uchar>(r);
+                for (int c = 0; c < sz; ++c) {
+                    float v = (curr[c] ? 1.f : 0.f) - (prev[c] ? 1.f : 0.f);
+                    // Encode as 0 (<=0) or 255 (>0) for the delta channel
+                    dst[c] = v > 0 ? 255 : 0;
+                }
+            }
+        }
+
+        std::vector<float> motion_fwd(5, 0.f), motion_yaw(5, 0.f);
+        for (size_t j = 1; j < 5u; ++j) {
+            const EgoFrame& curr = queue[j];
+            const EgoFrame& prev = queue[j - 1];
+            double dt = (curr.time - prev.time).seconds();
+            if (dt < 1e-6) dt = 1e-6;
+            double dx = curr.x - prev.x;
+            double dy = curr.y - prev.y;
+            double cy = std::cos(curr.yaw);
+            double sy = std::sin(curr.yaw);
+            double body_x = cy * dx + sy * dy;
+            double dyaw = curr.yaw - prev.yaw;
+            while (dyaw > 3.141592653589793) dyaw -= 2.0 * 3.141592653589793;
+            while (dyaw < -3.141592653589793) dyaw += 2.0 * 3.141592653589793;
+            motion_fwd[j] = static_cast<float>(body_x / dt);
+            motion_yaw[j] = static_cast<float>(dyaw / dt);
+        }
+
+        model_worker_->submit(grids, deltas, motion_fwd, motion_yaw,
+                              std::chrono::steady_clock::now());
+    }
+
     WaypointArray resampleWaypointsWorld(const WaypointArray& path, double spacing) const {
         if (path.size() < 2 || spacing <= 0) return path;
         std::vector<double> arc(path.size(), 0.0);
@@ -626,6 +741,25 @@ private:
         cv::distanceTransform(binary_inv, dist, cv::DIST_L2, cv::DIST_MASK_PRECISE);
         dist.convertTo(dist, CV_64F);
         return dist;
+    }
+
+    cv::Mat filterSmallObstacles(const cv::Mat& grid, int min_size_px) const {
+        if (grid.empty() || min_size_px <= 0) return grid;
+        cv::Mat binary;
+        cv::threshold(grid, binary, 50, 255, cv::THRESH_BINARY);
+        cv::Mat labels, stats, centroids;
+        int n_labels = cv::connectedComponentsWithStats(binary, labels, stats, centroids, 8, CV_32S);
+        cv::Mat filtered = grid.clone();
+        for (int label = 1; label < n_labels; ++label) {
+            int area = stats.at<int>(label, cv::CC_STAT_AREA);
+            if (area < min_size_px) {
+                for (int r = 0; r < labels.rows; ++r)
+                    for (int c = 0; c < labels.cols; ++c)
+                        if (labels.at<int>(r, c) == label)
+                            filtered.at<uchar>(r, c) = 0;
+            }
+        }
+        return filtered;
     }
 
     bool pathIntersectsObstacles(const std::vector<std::array<double, 2>>& path_world,
@@ -721,6 +855,11 @@ private:
         std::vector<std::array<double, 2>> current_path;
         path_planning::msg::OccupancyGridArray::SharedPtr predicted_msg;
         path_planning::msg::AgentCenteredInput::SharedPtr predicted_agent_msg;
+        std::chrono::steady_clock::time_point snap_pred_receive_time;
+        bool snap_have_pred_receive = false;
+        rclcpp::Time snap_pred_input_stamp{0, 0, RCL_ROS_TIME};
+        bool snap_have_pred_input_stamp = false;
+        float snap_model_inference_ms = 0.0f;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             has_new_lidar_data = new_lidar_data_;
@@ -743,6 +882,11 @@ private:
             current_path = current_path_;
             predicted_msg = last_predicted_array_;
             predicted_agent_msg = last_predicted_agent_;
+            snap_pred_receive_time = last_pred_receive_time_;
+            snap_have_pred_receive = have_pred_receive_time_;
+            snap_pred_input_stamp = last_pred_input_stamp_;
+            snap_have_pred_input_stamp = have_pred_input_stamp_;
+            snap_model_inference_ms = last_model_inference_ms_;
         }
         if (has_new_lidar_data) {
             live_pts = std::move(live_points_staging_);
@@ -818,32 +962,92 @@ private:
                         anchor_y_ = queue_ego_frames_.back().y;
                         anchor_yaw_ = queue_ego_frames_.back().yaw;
                     }
-                    if (pub_model_input_ && queue_ego_frames_.size() == required_queue) {
+                    if (queue_ego_frames_.size() == required_queue) {
                         std::deque<EgoFrame> q_full;
                         { std::lock_guard<std::mutex> lock(mutex_); q_full = queue_ego_frames_; }
                         std::deque<EgoFrame> q_strided;
                         for (int s = 0; s < 5; ++s)
                             q_strided.push_back(q_full[static_cast<size_t>(s * std::max(1, stride))]);
-                        path_planning::msg::AgentCenteredInput msg = toAgentCenteredInput(q_strided);
-                        msg.mode = 0;
-                        pub_model_input_->publish(msg);
+                        if (model_worker_) {
+                            submitToModelWorker(q_strided);
+                        } else if (pub_model_input_) {
+                            path_planning::msg::AgentCenteredInput msg = toAgentCenteredInput(q_strided);
+                            msg.mode = 0;
+                            pub_model_input_->publish(msg);
+                        }
+                        {
+                            std::lock_guard<std::mutex> lock(mutex_);
+                            last_input_publish_time_ = std::chrono::steady_clock::now();
+                            have_input_publish_time_ = true;
+                        }
                     }
+                }
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    last_lidar_process_time_ = std::chrono::steady_clock::now();
+                    have_lidar_process_time_ = true;
                 }
                 combined = bridge_.mergeWithStaticMap(cv::Mat::zeros(bridge_.gridHeight(), bridge_.gridWidth(), CV_8UC1));
                 pred_only_ = cv::Mat::zeros(bridge_.gridHeight(), bridge_.gridWidth(), CV_8UC1);
-                if (predicted_agent_msg) {
-                    std::vector<cv::Mat> grids = agentCenteredInputToMats(*predicted_agent_msg);
-                    if (!grids.empty()) {
+                {
+                    std::vector<cv::Mat> pred_grids;
+                    float infer_ms = 0.0f;
+                    bool have_pred = false;
+                    std::chrono::steady_clock::time_point pred_input_time;
+
+                    if (model_worker_) {
+                        auto result = model_worker_->getLatestResult();
+                        if (result.valid) {
+                            pred_grids = std::move(result.pred_grids);
+                            infer_ms = result.inference_ms;
+                            pred_input_time = result.input_time;
+                            have_pred = true;
+                        }
+                    } else if (predicted_agent_msg) {
+                        double max_age = get_parameter("max_prediction_age_ms").as_double();
+                        bool pred_fresh = true;
+                        double actual_age_ms = -1.0;
+                        if (snap_have_pred_receive && max_age > 0) {
+                            using MsD = std::chrono::duration<double, std::milli>;
+                            actual_age_ms = std::chrono::duration_cast<MsD>(
+                                std::chrono::steady_clock::now() - snap_pred_receive_time).count();
+                            pred_fresh = (actual_age_ms <= max_age);
+                        }
+                        if (pred_fresh) {
+                            pred_grids = agentCenteredInputToMats(*predicted_agent_msg);
+                            infer_ms = snap_model_inference_ms;
+                            pred_input_time = snap_pred_receive_time;
+                            have_pred = !pred_grids.empty();
+                        } else {
+                            RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
+                                "[map_frame_model] Skipping stale prediction (age=%.0fms > max=%.0fms)",
+                                actual_age_ms, max_age);
+                        }
+                        logPredictionLatency("map_frame_model", snap_have_pred_receive,
+                            snap_pred_receive_time, snap_have_pred_input_stamp,
+                            snap_pred_input_stamp, snap_model_inference_ms, t_cycle_start);
+                    }
+
+                    if (have_pred && !pred_grids.empty()) {
                         int N = get_parameter("num_predicted_frames").as_int();
-                        double T = get_parameter("prediction_temperature").as_double();
-                        size_t n = std::min(static_cast<size_t>(N), grids.size());
-                        std::vector<double> w = boltmannWeights(static_cast<int>(n), T);
-                        cv::Mat weighted_mf = weightCombineGrids(grids, w);
+                        double T_pred = get_parameter("prediction_temperature").as_double();
+                        size_t n = std::min(static_cast<size_t>(N), pred_grids.size());
+                        std::vector<double> w = boltmannWeights(static_cast<int>(n), T_pred);
+                        cv::Mat weighted_mf = weightCombineGrids(pred_grids, w);
                         if (!weighted_mf.empty()) {
-                            double ax, ay;
-                            { std::lock_guard<std::mutex> lock(mutex_); ax = anchor_x_; ay = anchor_y_; }
+                            double ax, ay, ayaw;
+                            { std::lock_guard<std::mutex> lock(mutex_); ax = anchor_x_; ay = anchor_y_; ayaw = anchor_yaw_; }
+                            applyOriginCropToCentered201Grid(weighted_mf, crop_radius_m, crop_fwd_offset_m, ayaw, false);
                             bridge_.pasteMapFrameGridIntoMap(weighted_mf, ax, ay, combined);
                             bridge_.pasteMapFrameGridIntoMap(weighted_mf, ax, ay, pred_only_);
+                        }
+                        if (model_worker_) {
+                            using MsD = std::chrono::duration<double, std::milli>;
+                            double age_ms = std::chrono::duration_cast<MsD>(
+                                std::chrono::steady_clock::now() - pred_input_time).count();
+                            RCLCPP_INFO(get_logger(),
+                                "[map_frame_model IN-PROCESS] inference=%.0fms pred_age=%.0fms",
+                                infer_ms, age_ms);
                         }
                     }
                 }
@@ -878,44 +1082,102 @@ private:
                         anchor_y_ = queue_ego_frames_.back().y;
                         anchor_yaw_ = queue_ego_frames_.back().yaw;
                     }
-                    if (pub_model_input_ && queue_ego_frames_.size() == required_queue) {
+                    if (queue_ego_frames_.size() == required_queue) {
                         std::deque<EgoFrame> q_full;
                         { std::lock_guard<std::mutex> lock(mutex_); q_full = queue_ego_frames_; }
                         std::deque<EgoFrame> q_strided;
                         for (int s = 0; s < 5; ++s)
                             q_strided.push_back(q_full[static_cast<size_t>(s * std::max(1, stride))]);
                         auto t_before_to_msg = std::chrono::high_resolution_clock::now();
-                        path_planning::msg::AgentCenteredInput msg = toAgentCenteredInput(q_strided);
-                        auto t_after_to_msg = std::chrono::high_resolution_clock::now();
-                        pub_model_input_->publish(msg);
+                        if (model_worker_) {
+                            submitToModelWorker(q_strided);
+                        } else if (pub_model_input_) {
+                            path_planning::msg::AgentCenteredInput msg = toAgentCenteredInput(q_strided);
+                            pub_model_input_->publish(msg);
+                        }
                         auto t_after_publish = std::chrono::high_resolution_clock::now();
+                        {
+                            std::lock_guard<std::mutex> lock(mutex_);
+                            last_input_publish_time_ = std::chrono::steady_clock::now();
+                            have_input_publish_time_ = true;
+                        }
                         using Ms = std::chrono::duration<double, std::milli>;
                         double ms_swap = std::chrono::duration_cast<Ms>(t_after_swap - t_cycle_start).count();
                         double ms_tf = std::chrono::duration_cast<Ms>(t_after_transform - t_after_swap).count();
                         double ms_ego = std::chrono::duration_cast<Ms>(t_after_ego - t_before_ego).count();
-                        double ms_to_msg = std::chrono::duration_cast<Ms>(t_after_to_msg - t_before_to_msg).count();
-                        double ms_pub = std::chrono::duration_cast<Ms>(t_after_publish - t_after_to_msg).count();
+                        double ms_submit = std::chrono::duration_cast<Ms>(t_after_publish - t_before_to_msg).count();
                         double ms_total = std::chrono::duration_cast<Ms>(t_after_publish - t_cycle_start).count();
                         RCLCPP_INFO(get_logger(),
-                            "[agent_centered] swap=%.1fms transform=%.1fms ego_grid=%.1fms to_msg=%.1fms publish=%.1fms | total=%.1fms",
-                            ms_swap, ms_tf, ms_ego, ms_to_msg, ms_pub, ms_total);
+                            "[agent_centered] swap=%.1fms transform=%.1fms ego_grid=%.1fms submit=%.1fms | total=%.1fms",
+                            ms_swap, ms_tf, ms_ego, ms_submit, ms_total);
                     }
+                }
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    last_lidar_process_time_ = std::chrono::steady_clock::now();
+                    have_lidar_process_time_ = true;
                 }
                 combined = bridge_.mergeWithStaticMap(cv::Mat::zeros(bridge_.gridHeight(), bridge_.gridWidth(), CV_8UC1));
                 pred_only_ = cv::Mat::zeros(bridge_.gridHeight(), bridge_.gridWidth(), CV_8UC1);
-                if (predicted_agent_msg) {
-                    std::vector<cv::Mat> grids = agentCenteredInputToMats(*predicted_agent_msg);
-                    if (!grids.empty()) {
+                {
+                    std::vector<cv::Mat> pred_grids;
+                    float infer_ms = 0.0f;
+                    bool have_pred = false;
+                    std::chrono::steady_clock::time_point pred_input_time;
+
+                    if (model_worker_) {
+                        auto result = model_worker_->getLatestResult();
+                        if (result.valid) {
+                            pred_grids = std::move(result.pred_grids);
+                            infer_ms = result.inference_ms;
+                            pred_input_time = result.input_time;
+                            have_pred = true;
+                        }
+                    } else if (predicted_agent_msg) {
+                        double max_age = get_parameter("max_prediction_age_ms").as_double();
+                        bool pred_fresh = true;
+                        double actual_age_ms = -1.0;
+                        if (snap_have_pred_receive && max_age > 0) {
+                            using MsD = std::chrono::duration<double, std::milli>;
+                            actual_age_ms = std::chrono::duration_cast<MsD>(
+                                std::chrono::steady_clock::now() - snap_pred_receive_time).count();
+                            pred_fresh = (actual_age_ms <= max_age);
+                        }
+                        if (pred_fresh) {
+                            pred_grids = agentCenteredInputToMats(*predicted_agent_msg);
+                            infer_ms = snap_model_inference_ms;
+                            pred_input_time = snap_pred_receive_time;
+                            have_pred = !pred_grids.empty();
+                        } else {
+                            RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
+                                "[agent_centered] Skipping stale prediction (age=%.0fms > max=%.0fms)",
+                                actual_age_ms, max_age);
+                        }
+                        logPredictionLatency("agent_centered", snap_have_pred_receive,
+                            snap_pred_receive_time, snap_have_pred_input_stamp,
+                            snap_pred_input_stamp, snap_model_inference_ms, t_cycle_start);
+                    }
+
+                    if (have_pred && !pred_grids.empty()) {
                         int N = get_parameter("num_predicted_frames").as_int();
-                        double T = get_parameter("prediction_temperature").as_double();
-                        size_t n = std::min(static_cast<size_t>(N), grids.size());
-                        std::vector<double> w = boltmannWeights(static_cast<int>(n), T);
-                        cv::Mat weighted_ego = weightCombineGrids(grids, w);
+                        double T_pred = get_parameter("prediction_temperature").as_double();
+                        size_t n = std::min(static_cast<size_t>(N), pred_grids.size());
+                        std::vector<double> w = boltmannWeights(static_cast<int>(n), T_pred);
+                        cv::Mat weighted_ego = weightCombineGrids(pred_grids, w);
                         if (!weighted_ego.empty()) {
                             double ax, ay, ayaw;
                             { std::lock_guard<std::mutex> lock(mutex_); ax = anchor_x_; ay = anchor_y_; ayaw = anchor_yaw_; }
+                            applyOriginCropToCentered201Grid(weighted_ego, crop_radius_m, crop_fwd_offset_m, ayaw, true);
                             bridge_.pasteEgoGridIntoMap(weighted_ego, ax, ay, ayaw, combined);
                             bridge_.pasteEgoGridIntoMap(weighted_ego, ax, ay, ayaw, pred_only_);
+                        }
+                        if (model_worker_) {
+                            using MsD = std::chrono::duration<double, std::milli>;
+                            double age_ms = std::chrono::duration_cast<MsD>(
+                                std::chrono::steady_clock::now() - pred_input_time).count();
+                            RCLCPP_INFO(get_logger(),
+                                "[agent_centered IN-PROCESS] inference=%.0fms pred_age=%.0fms",
+                                infer_ms, age_ms);
                         }
                     }
                 }
@@ -997,7 +1259,9 @@ private:
         // Only compute the expensive distance transform when we actually need intersection checking
         cv::Mat dist_map;
         if (!needs_replan && !current_path.empty() && !combined.empty()) {
-            dist_map = computeDistanceTransform(combined);
+            int min_obs_size = get_parameter("min_replan_obstacle_size").as_int();
+            cv::Mat replan_grid = filterSmallObstacles(combined, min_obs_size);
+            dist_map = computeDistanceTransform(replan_grid);
         }
         if (!needs_replan && !dist_map.empty()) {
             double lookahead = get_parameter("replan_lookahead_distance").as_double();
@@ -1230,6 +1494,20 @@ private:
     std::deque<EgoFrame> queue_ego_frames_;
     double anchor_x_ = 0, anchor_y_ = 0, anchor_yaw_ = 0;
     cv::Mat pred_only_;
+
+    // In-process TorchScript model inference
+    std::unique_ptr<ModelWorker> model_worker_;
+
+    // Latency instrumentation
+    std::chrono::steady_clock::time_point last_input_publish_time_;
+    bool have_input_publish_time_ = false;
+    std::chrono::steady_clock::time_point last_pred_receive_time_;
+    bool have_pred_receive_time_ = false;
+    rclcpp::Time last_pred_input_stamp_{0, 0, RCL_ROS_TIME};
+    bool have_pred_input_stamp_ = false;
+    float last_model_inference_ms_ = 0.0f;
+    std::chrono::steady_clock::time_point last_lidar_process_time_;
+    bool have_lidar_process_time_ = false;
 };
 
 int main(int argc, char** argv) {
