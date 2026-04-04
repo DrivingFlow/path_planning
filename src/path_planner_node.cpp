@@ -774,6 +774,48 @@ private:
             }
         }
 
+        // Check the segment from robot position to the closest waypoint
+        {
+            Eigen::Vector2d p0 = robot;
+            Eigen::Vector2d p1(path_world[start_idx][0], path_world[start_idx][1]);
+            double seg_len = (p1 - p0).norm();
+            if (seg_len > 1e-6) {
+                int col0, row0, col1, row1;
+                bridge_.worldToGrid(p0.x(), p0.y(), col0, row0);
+                bridge_.worldToGrid(p1.x(), p1.y(), col1, row1);
+                int num_samples = static_cast<int>(seg_len / resolution) + 1;
+                for (int j = 0; j <= num_samples; ++j) {
+                    double t = static_cast<double>(j) / num_samples;
+                    int col = static_cast<int>(col0 + t * (col1 - col0));
+                    int row = static_cast<int>(row0 + t * (row1 - row0));
+                    if (col >= 0 && col < dist.cols && row >= 0 && row < dist.rows) {
+                        if (dist.at<double>(row, col) <= required_clearance_px) return true;
+                    }
+                }
+            }
+        }
+
+        // Also check a few segments before start_idx (robot may have overshot)
+        size_t check_begin = (start_idx >= 3) ? start_idx - 3 : 0;
+        for (size_t i = check_begin; i + 1 <= start_idx && i + 1 < path_world.size(); ++i) {
+            Eigen::Vector2d p0(path_world[i][0], path_world[i][1]);
+            Eigen::Vector2d p1(path_world[i + 1][0], path_world[i + 1][1]);
+            double seg_len = (p1 - p0).norm();
+            int col0, row0, col1, row1;
+            bridge_.worldToGrid(p0.x(), p0.y(), col0, row0);
+            bridge_.worldToGrid(p1.x(), p1.y(), col1, row1);
+            int num_samples = static_cast<int>(seg_len / resolution) + 1;
+            for (int j = 0; j <= num_samples; ++j) {
+                double t = static_cast<double>(j) / num_samples;
+                int col = static_cast<int>(col0 + t * (col1 - col0));
+                int row = static_cast<int>(row0 + t * (row1 - row0));
+                if (col >= 0 && col < dist.cols && row >= 0 && row < dist.rows) {
+                    if (dist.at<double>(row, col) <= required_clearance_px) return true;
+                }
+            }
+        }
+
+        // Check forward from start_idx
         for (size_t i = start_idx; i + 1 < path_world.size(); ++i) {
             Eigen::Vector2d p0(path_world[i][0], path_world[i][1]);
             Eigen::Vector2d p1(path_world[i + 1][0], path_world[i + 1][1]);
