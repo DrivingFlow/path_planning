@@ -745,20 +745,10 @@ private:
 
     cv::Mat filterSmallObstacles(const cv::Mat& grid, int min_size_px) const {
         if (grid.empty() || min_size_px <= 0) return grid;
-        cv::Mat binary;
-        cv::threshold(grid, binary, 50, 255, cv::THRESH_BINARY);
-        cv::Mat labels, stats, centroids;
-        int n_labels = cv::connectedComponentsWithStats(binary, labels, stats, centroids, 8, CV_32S);
-        cv::Mat filtered = grid.clone();
-        for (int label = 1; label < n_labels; ++label) {
-            int area = stats.at<int>(label, cv::CC_STAT_AREA);
-            if (area < min_size_px) {
-                for (int r = 0; r < labels.rows; ++r)
-                    for (int c = 0; c < labels.cols; ++c)
-                        if (labels.at<int>(r, c) == label)
-                            filtered.at<uchar>(r, c) = 0;
-            }
-        }
+        int k = std::max(1, static_cast<int>(std::ceil(std::sqrt(static_cast<double>(min_size_px)))));
+        cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(k, k));
+        cv::Mat filtered;
+        cv::morphologyEx(grid, filtered, cv::MORPH_OPEN, kernel);
         return filtered;
     }
 
