@@ -26,6 +26,7 @@ def generate_launch_description():
     local_replan_enabled = LaunchConfiguration("local_replan_enabled")
     local_replan_radius = LaunchConfiguration("local_replan_radius")
     live_scan_radius = LaunchConfiguration("live_scan_radius")
+    min_replan_obstacle_size = LaunchConfiguration("min_replan_obstacle_size")
 
     lidar_topic = LaunchConfiguration("lidar_topic")
     pose_topic = LaunchConfiguration("pose_topic")
@@ -63,6 +64,10 @@ def generate_launch_description():
     model_occ_input_topic = LaunchConfiguration("model_occ_input_topic", default="/map_updater/occ_grid_input")
     model_predicted_output_topic = LaunchConfiguration("model_predicted_output_topic", default="/map_updater/predicted_grid_output")
     agent_frame_stride = LaunchConfiguration("agent_frame_stride", default="5")
+    max_prediction_age_ms = LaunchConfiguration("max_prediction_age_ms", default="250.0")
+    use_in_process_model = LaunchConfiguration("use_in_process_model", default="False")
+    model_script_path = LaunchConfiguration("model_script_path",
+        default="/home/unitree/path_planning/src/path_planning/models/model_scripted.pt")
 
     return LaunchDescription(
         [
@@ -106,6 +111,8 @@ def generate_launch_description():
             DeclareLaunchArgument("local_replan_radius", default_value="5.0"),
             # Maximum distance (meters) from robot for live scan points; 0 = no limit (use all points)
             DeclareLaunchArgument("live_scan_radius", default_value="5.0"),
+            # Minimum obstacle blob size (pixels) to trigger intersection-based replanning; smaller blobs are ignored. 0 = disabled.
+            DeclareLaunchArgument("min_replan_obstacle_size", default_value="0"),
             # Topic name for LIDAR point cloud input
             DeclareLaunchArgument("lidar_topic", default_value="/livox/lidar"),
             # Topic name for robot pose input
@@ -168,6 +175,12 @@ def generate_launch_description():
             DeclareLaunchArgument("model_predicted_output_topic", default_value="/map_updater/predicted_grid_output"),
             # Stride between frames sampled for the agent-centered model (queue size = 4*stride+1)
             DeclareLaunchArgument("agent_frame_stride", default_value="5"),
+            DeclareLaunchArgument("max_prediction_age_ms", default_value="250.0"),
+            # Run the ML model in-process via TorchScript instead of via external ROS node
+            DeclareLaunchArgument("use_in_process_model", default_value="False"),
+            # Path to the exported TorchScript model file (.pt)
+            DeclareLaunchArgument("model_script_path",
+                default_value="/home/unitree/path_planning/src/path_planning/models/model_scripted.pt"),
             Node(
                 package="path_planning",
                 executable="path_planner_node",
@@ -195,6 +208,7 @@ def generate_launch_description():
                         "local_replan_enabled": local_replan_enabled,
                         "local_replan_radius": local_replan_radius,
                         "live_scan_radius": live_scan_radius,
+                        "min_replan_obstacle_size": min_replan_obstacle_size,
                         "sample_col_min": sample_col_min,
                         "sample_col_max": sample_col_max,
                         "sample_row_min": sample_row_min,
@@ -211,6 +225,9 @@ def generate_launch_description():
                         "model_occ_input_topic": model_occ_input_topic,
                         "model_predicted_output_topic": model_predicted_output_topic,
                         "agent_frame_stride": agent_frame_stride,
+                        "max_prediction_age_ms": max_prediction_age_ms,
+                        "use_in_process_model": use_in_process_model,
+                        "model_script_path": model_script_path,
                     }
                 ],
                 remappings=[

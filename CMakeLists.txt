@@ -19,6 +19,12 @@ find_package(OpenCV REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
+# LibTorch (from pip-installed PyTorch)
+list(APPEND CMAKE_PREFIX_PATH "/home/unitree/.local/lib/python3.8/site-packages/torch/share/cmake")
+find_package(Torch REQUIRED)
+# Suppress C++ standard flags injected by Torch cmake (conflicts with our C++17)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
+
 # Custom messages: array of occupancy grids; agent-centered binary input
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/OccupancyGridArray.msg"
@@ -40,10 +46,13 @@ target_include_directories(path_planning_core PUBLIC
 )
 target_link_libraries(path_planning_core ${OpenCV_LIBS})
 
-# Path planner ROS2 node
+# Path planner ROS2 node (with LibTorch for in-process model inference)
 add_executable(path_planner_node src/path_planner_node.cpp)
-target_include_directories(path_planner_node PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(path_planner_node path_planning_core)
+target_include_directories(path_planner_node PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/src
+  ${TORCH_INCLUDE_DIRS}
+)
+target_link_libraries(path_planner_node path_planning_core "${TORCH_LIBRARIES}")
 ament_target_dependencies(path_planner_node rclcpp sensor_msgs geometry_msgs nav_msgs std_msgs tf2)
 rosidl_target_interfaces(path_planner_node ${PROJECT_NAME} "rosidl_typesupport_cpp")
 
