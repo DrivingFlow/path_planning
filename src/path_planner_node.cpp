@@ -1083,7 +1083,8 @@ private:
                         if (!weighted_mf.empty()) {
                             double ax, ay, ayaw;
                             { std::lock_guard<std::mutex> lock(mutex_); ax = anchor_x_; ay = anchor_y_; ayaw = anchor_yaw_; }
-                            applyOriginCropToCentered201Grid(weighted_mf, crop_radius_m, crop_fwd_offset_m, ayaw, false);
+                            applyOriginCropToCentered201Grid(
+                                weighted_mf, crop_radius_m, crop_fwd_offset_m, crop_lateral_offset_m, ayaw, false);
                             bridge_.pasteMapFrameGridIntoMap(weighted_mf, ax, ay, combined);
                             bridge_.pasteMapFrameGridIntoMap(weighted_mf, ax, ay, pred_only_);
                         }
@@ -1213,7 +1214,8 @@ private:
                         if (!weighted_ego.empty()) {
                             double ax, ay, ayaw;
                             { std::lock_guard<std::mutex> lock(mutex_); ax = anchor_x_; ay = anchor_y_; ayaw = anchor_yaw_; }
-                            applyOriginCropToCentered201Grid(weighted_ego, crop_radius_m, crop_fwd_offset_m, ayaw, true);
+                            applyOriginCropToCentered201Grid(
+                                weighted_ego, crop_radius_m, crop_fwd_offset_m, crop_lateral_offset_m, ayaw, true);
                             bridge_.pasteEgoGridIntoMap(weighted_ego, ax, ay, ayaw, combined);
                             bridge_.pasteEgoGridIntoMap(weighted_ego, ax, ay, ayaw, pred_only_);
                         }
