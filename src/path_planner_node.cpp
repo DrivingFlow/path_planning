@@ -72,6 +72,8 @@ public:
         declare_parameter<double>("origin_crop_radius", 0.0);
         // Forward offset (m) of the crop circle center from robot origin along +x (robot forward).
         declare_parameter<double>("origin_crop_forward_offset", 0.0);
+        // Lateral offset (m) of the crop circle center from robot origin along +y (robot left).
+        declare_parameter<double>("origin_crop_lateral_offset", 0.0);
         // Additional half-width (m) to enforce a corridor around the A* centerline.
         declare_parameter<double>("astar_corridor_half_width", 0.0);
         // Number of RRT* planning iterations (more = better path but slower)
@@ -192,10 +194,12 @@ private:
 
     void applyOriginCropToMapGrid(cv::Mat& grid,
                                   double start_x, double start_y, double start_yaw,
-                                  double crop_radius_m, double fwd_offset_m) const {
+                                  double crop_radius_m, double fwd_offset_m, double lateral_offset_m) const {
         if (grid.empty() || crop_radius_m <= 0.0) return;
-        double crop_cx = start_x + fwd_offset_m * std::cos(start_yaw);
-        double crop_cy = start_y + fwd_offset_m * std::sin(start_yaw);
+        double c = std::cos(start_yaw);
+        double s = std::sin(start_yaw);
+        double crop_cx = start_x + fwd_offset_m * c - lateral_offset_m * s;
+        double crop_cy = start_y + fwd_offset_m * s + lateral_offset_m * c;
         int center_col, center_row;
         bridge_.worldToGrid(crop_cx, crop_cy, center_col, center_row);
         int crop_radius_px = static_cast<int>(std::ceil(crop_radius_m / bridge_.resolution()));
@@ -205,11 +209,20 @@ private:
     void applyOriginCropToCentered201Grid(cv::Mat& grid,
                                           double crop_radius_m,
                                           double fwd_offset_m,
+                                          double lateral_offset_m,
                                           double start_yaw,
                                           bool ego_aligned) const {
         if (grid.empty() || crop_radius_m <= 0.0) return;
-        double dx = ego_aligned ? fwd_offset_m : fwd_offset_m * std::cos(start_yaw);
-        double dy = ego_aligned ? 0.0 : fwd_offset_m * std::sin(start_yaw);
+        double dx, dy;
+        if (ego_aligned) {
+            dx = fwd_offset_m;
+            dy = lateral_offset_m;
+        } else {
+            double c = std::cos(start_yaw);
+            double s = std::sin(start_yaw);
+            dx = fwd_offset_m * c - lateral_offset_m * s;
+            dy = fwd_offset_m * s + lateral_offset_m * c;
+        }
         double res = OccGridBridge::egoGridResolution();
         double ox = OccGridBridge::egoGridOriginX();
         double oy = OccGridBridge::egoGridOriginY();
@@ -759,6 +772,7 @@ private:
         double z_max = get_parameter("z_max").as_double();
         double crop_radius_m = get_parameter("origin_crop_radius").as_double();
         double crop_fwd_offset_m = get_parameter("origin_crop_forward_offset").as_double();
+        double crop_lateral_offset_m = get_parameter("origin_crop_lateral_offset").as_double();
 
         if (has_new_lidar_data) {
             if (have_pose) {
@@ -800,7 +814,7 @@ private:
                         live_pts, start_x, start_y, z_min, z_max);
                     if (crop_origin_in_model_input) {
                         applyOriginCropToCentered201Grid(
-                            mf_grid, crop_radius_m, crop_fwd_offset_m, start_yaw, false);
+                            mf_grid, crop_radius_m, crop_fwd_offset_m, crop_lateral_offset_m, start_yaw, false);
                     }
                     EgoFrame frame;
                     frame.grid = mf_grid;
@@ -859,7 +873,7 @@ private:
                         live_pts, start_x, start_y, start_yaw, z_min, z_max);
                     if (crop_origin_in_model_input) {
                         applyOriginCropToCentered201Grid(
-                            ego_grid, crop_radius_m, crop_fwd_offset_m, start_yaw, true);
+                            ego_grid, crop_radius_m, crop_fwd_offset_m, crop_lateral_offset_m, start_yaw, true);
                     }
                     auto t_after_ego = std::chrono::high_resolution_clock::now();
                     EgoFrame frame;
@@ -939,7 +953,9 @@ private:
 
         // Clear obstacles within origin_crop_radius of a point offset forward from the robot origin
         if (have_pose && crop_radius_m > 0.0 && !combined.empty()) {
-            applyOriginCropToMapGrid(combined, start_x, start_y, start_yaw, crop_radius_m, crop_fwd_offset_m);
+            applyOriginCropToMapGrid(
+                combined, start_x, start_y, start_yaw,
+                crop_radius_m, crop_fwd_offset_m, crop_lateral_offset_m);
         }
 
         publishOccupancyGrid(combined, "map", bridge_.xMin(), bridge_.yMin(), bridge_.resolution());
