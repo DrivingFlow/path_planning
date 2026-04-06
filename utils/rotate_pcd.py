@@ -39,7 +39,7 @@ if __name__ == "__main__":
     # -----------------------------
     yaml_config_path = None  # e.g. r"path/to/plab_4-2_rotated.yaml" to reuse stored config
 
-    pcd_path = r"C:\Users\ianrp\Desktop\Assignments\Fifth\ENPH 479\path_planning\utils\alum_cropped.ply"
+    pcd_path = r"C:\Users\ianrp\Desktop\Assignments\Fifth\ENPH 479\path_planning\utils\alum_downsamp.ply"
     out_path = r"C:\Users\ianrp\Desktop\Assignments\Fifth\ENPH 479\path_planning\utils"
 
     z_range = [0.05, 1]
