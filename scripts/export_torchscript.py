@@ -35,7 +35,7 @@ def main():
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
 
     print(f"Loading weights from {args.weights} ...")
-    model = TransformerModel(grid_h=201, grid_w=201, motion_dim=2)
+    model = TransformerModel(grid_h=201, grid_w=201, motion_dim=2, num_decoder_layers=4)
     state_dict = torch.load(args.weights, map_location="cpu")
     model.load_state_dict(state_dict)
     model.eval()

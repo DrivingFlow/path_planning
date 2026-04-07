@@ -99,6 +99,8 @@ public:
 
         declare_parameter<std::string>("occ_data_mode", "live");
         declare_parameter<bool>("overlay_live_scans_with_model", false);
+        declare_parameter<bool>("use_model_overlay", true);
+        declare_parameter<double>("astar_corridor_half_width_live", 0.20);
         declare_parameter<double>("prediction_temperature", 1.0);
         declare_parameter<int>("num_predicted_frames", 5);
         declare_parameter<double>("model_occupancy_threshold", 0.5);
@@ -943,6 +945,7 @@ private:
 
         std::string mode = get_parameter("occ_data_mode").as_string();
         bool overlay_live_scans_with_model = get_parameter("overlay_live_scans_with_model").as_bool();
+        bool use_model_overlay = get_parameter("use_model_overlay").as_bool();
         bool crop_origin_in_model_input = get_parameter("crop_origin_in_model_input").as_bool();
         double z_min = get_parameter("z_min").as_double();
         double z_max = get_parameter("z_max").as_double();
@@ -1033,73 +1036,78 @@ private:
                     last_lidar_process_time_ = std::chrono::steady_clock::now();
                     have_lidar_process_time_ = true;
                 }
-                combined = bridge_.mergeWithStaticMap(cv::Mat::zeros(bridge_.gridHeight(), bridge_.gridWidth(), CV_8UC1));
-                pred_only_ = cv::Mat::zeros(bridge_.gridHeight(), bridge_.gridWidth(), CV_8UC1);
-                {
-                    std::vector<cv::Mat> pred_grids;
-                    float infer_ms = 0.0f;
-                    bool have_pred = false;
-                    std::chrono::steady_clock::time_point pred_input_time;
+                if (use_model_overlay) {
+                    combined = bridge_.mergeWithStaticMap(cv::Mat::zeros(bridge_.gridHeight(), bridge_.gridWidth(), CV_8UC1));
+                    pred_only_ = cv::Mat::zeros(bridge_.gridHeight(), bridge_.gridWidth(), CV_8UC1);
+                    {
+                        std::vector<cv::Mat> pred_grids;
+                        float infer_ms = 0.0f;
+                        bool have_pred = false;
+                        std::chrono::steady_clock::time_point pred_input_time;
 
-                    if (model_worker_) {
-                        auto result = model_worker_->getLatestResult();
-                        if (result.valid) {
-                            pred_grids = std::move(result.pred_grids);
-                            infer_ms = result.inference_ms;
-                            pred_input_time = result.input_time;
-                            have_pred = true;
-                        }
-                    } else if (predicted_agent_msg) {
-                        double max_age = get_parameter("max_prediction_age_ms").as_double();
-                        bool pred_fresh = true;
-                        double actual_age_ms = -1.0;
-                        if (snap_have_pred_receive && max_age > 0) {
-                            using MsD = std::chrono::duration<double, std::milli>;
-                            actual_age_ms = std::chrono::duration_cast<MsD>(
-                                std::chrono::steady_clock::now() - snap_pred_receive_time).count();
-                            pred_fresh = (actual_age_ms <= max_age);
-                        }
-                        if (pred_fresh) {
-                            pred_grids = agentCenteredInputToMats(*predicted_agent_msg);
-                            infer_ms = snap_model_inference_ms;
-                            pred_input_time = snap_pred_receive_time;
-                            have_pred = !pred_grids.empty();
-                        } else {
-                            RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
-                                "[map_frame_model] Skipping stale prediction (age=%.0fms > max=%.0fms)",
-                                actual_age_ms, max_age);
-                        }
-                        logPredictionLatency("map_frame_model", snap_have_pred_receive,
-                            snap_pred_receive_time, snap_have_pred_input_stamp,
-                            snap_pred_input_stamp, snap_model_inference_ms, t_cycle_start);
-                    }
-
-                    if (have_pred && !pred_grids.empty()) {
-                        int N = get_parameter("num_predicted_frames").as_int();
-                        double T_pred = get_parameter("prediction_temperature").as_double();
-                        size_t n = std::min(static_cast<size_t>(N), pred_grids.size());
-                        std::vector<double> w = boltmannWeights(static_cast<int>(n), T_pred);
-                        cv::Mat weighted_mf = weightCombineGrids(pred_grids, w);
-                        if (!weighted_mf.empty()) {
-                            double ax, ay, ayaw;
-                            { std::lock_guard<std::mutex> lock(mutex_); ax = anchor_x_; ay = anchor_y_; ayaw = anchor_yaw_; }
-                            applyOriginCropToCentered201Grid(
-                                weighted_mf, crop_radius_m, crop_fwd_offset_m, crop_lateral_offset_m, ayaw, false);
-                            bridge_.pasteMapFrameGridIntoMap(weighted_mf, ax, ay, combined);
-                            bridge_.pasteMapFrameGridIntoMap(weighted_mf, ax, ay, pred_only_);
-                        }
                         if (model_worker_) {
-                            using MsD = std::chrono::duration<double, std::milli>;
-                            double age_ms = std::chrono::duration_cast<MsD>(
-                                std::chrono::steady_clock::now() - pred_input_time).count();
-                            RCLCPP_INFO(get_logger(),
-                                "[map_frame_model IN-PROCESS] inference=%.0fms pred_age=%.0fms",
-                                infer_ms, age_ms);
+                            auto result = model_worker_->getLatestResult();
+                            if (result.valid) {
+                                pred_grids = std::move(result.pred_grids);
+                                infer_ms = result.inference_ms;
+                                pred_input_time = result.input_time;
+                                have_pred = true;
+                            }
+                        } else if (predicted_agent_msg) {
+                            double max_age = get_parameter("max_prediction_age_ms").as_double();
+                            bool pred_fresh = true;
+                            double actual_age_ms = -1.0;
+                            if (snap_have_pred_receive && max_age > 0) {
+                                using MsD = std::chrono::duration<double, std::milli>;
+                                actual_age_ms = std::chrono::duration_cast<MsD>(
+                                    std::chrono::steady_clock::now() - snap_pred_receive_time).count();
+                                pred_fresh = (actual_age_ms <= max_age);
+                            }
+                            if (pred_fresh) {
+                                pred_grids = agentCenteredInputToMats(*predicted_agent_msg);
+                                infer_ms = snap_model_inference_ms;
+                                pred_input_time = snap_pred_receive_time;
+                                have_pred = !pred_grids.empty();
+                            } else {
+                                RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
+                                    "[map_frame_model] Skipping stale prediction (age=%.0fms > max=%.0fms)",
+                                    actual_age_ms, max_age);
+                            }
+                            logPredictionLatency("map_frame_model", snap_have_pred_receive,
+                                snap_pred_receive_time, snap_have_pred_input_stamp,
+                                snap_pred_input_stamp, snap_model_inference_ms, t_cycle_start);
+                        }
+
+                        if (have_pred && !pred_grids.empty()) {
+                            int N = get_parameter("num_predicted_frames").as_int();
+                            double T_pred = get_parameter("prediction_temperature").as_double();
+                            size_t n = std::min(static_cast<size_t>(N), pred_grids.size());
+                            std::vector<double> w = boltmannWeights(static_cast<int>(n), T_pred);
+                            cv::Mat weighted_mf = weightCombineGrids(pred_grids, w);
+                            if (!weighted_mf.empty()) {
+                                double ax, ay, ayaw;
+                                { std::lock_guard<std::mutex> lock(mutex_); ax = anchor_x_; ay = anchor_y_; ayaw = anchor_yaw_; }
+                                applyOriginCropToCentered201Grid(
+                                    weighted_mf, crop_radius_m, crop_fwd_offset_m, crop_lateral_offset_m, ayaw, false);
+                                bridge_.pasteMapFrameGridIntoMap(weighted_mf, ax, ay, combined);
+                                bridge_.pasteMapFrameGridIntoMap(weighted_mf, ax, ay, pred_only_);
+                            }
+                            if (model_worker_) {
+                                using MsD = std::chrono::duration<double, std::milli>;
+                                double age_ms = std::chrono::duration_cast<MsD>(
+                                    std::chrono::steady_clock::now() - pred_input_time).count();
+                                RCLCPP_INFO(get_logger(),
+                                    "[map_frame_model IN-PROCESS] inference=%.0fms pred_age=%.0fms",
+                                    infer_ms, age_ms);
+                            }
                         }
                     }
-                }
-                if (overlay_live_scans_with_model && !live_grid.empty()) {
-                    combined = bridge_.mergeWithStaticMap(cv::max(combined, live_grid));
+                    if (overlay_live_scans_with_model && !live_grid.empty()) {
+                        combined = bridge_.mergeWithStaticMap(cv::max(combined, live_grid));
+                    }
+                } else {
+                    combined = bridge_.mergeWithStaticMap(live_grid);
+                    pred_only_ = cv::Mat();
                 }
                 publishLiveGrid(live_grid, "map", bridge_.xMin(), bridge_.yMin(), bridge_.resolution());
             } else if (mode == "agent_centered_model") {
@@ -1164,40 +1172,41 @@ private:
                     last_lidar_process_time_ = std::chrono::steady_clock::now();
                     have_lidar_process_time_ = true;
                 }
-                combined = bridge_.mergeWithStaticMap(cv::Mat::zeros(bridge_.gridHeight(), bridge_.gridWidth(), CV_8UC1));
-                pred_only_ = cv::Mat::zeros(bridge_.gridHeight(), bridge_.gridWidth(), CV_8UC1);
-                {
-                    std::vector<cv::Mat> pred_grids;
-                    float infer_ms = 0.0f;
-                    bool have_pred = false;
-                    std::chrono::steady_clock::time_point pred_input_time;
+                if (use_model_overlay) {
+                    combined = bridge_.mergeWithStaticMap(cv::Mat::zeros(bridge_.gridHeight(), bridge_.gridWidth(), CV_8UC1));
+                    pred_only_ = cv::Mat::zeros(bridge_.gridHeight(), bridge_.gridWidth(), CV_8UC1);
+                    {
+                        std::vector<cv::Mat> pred_grids;
+                        float infer_ms = 0.0f;
+                        bool have_pred = false;
+                        std::chrono::steady_clock::time_point pred_input_time;
 
-                    if (model_worker_) {
-                        auto result = model_worker_->getLatestResult();
-                        if (result.valid) {
-                            pred_grids = std::move(result.pred_grids);
-                            infer_ms = result.inference_ms;
-                            pred_input_time = result.input_time;
-                            have_pred = true;
-                        }
-                    } else if (predicted_agent_msg) {
-                        double max_age = get_parameter("max_prediction_age_ms").as_double();
-                        bool pred_fresh = true;
-                        double actual_age_ms = -1.0;
-                        if (snap_have_pred_receive && max_age > 0) {
-                            using MsD = std::chrono::duration<double, std::milli>;
-                            actual_age_ms = std::chrono::duration_cast<MsD>(
-                                std::chrono::steady_clock::now() - snap_pred_receive_time).count();
-                            pred_fresh = (actual_age_ms <= max_age);
-                        }
-                        if (pred_fresh) {
-                            pred_grids = agentCenteredInputToMats(*predicted_agent_msg);
-                            infer_ms = snap_model_inference_ms;
-                            pred_input_time = snap_pred_receive_time;
-                            have_pred = !pred_grids.empty();
-                        } else {
-                            RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
-                                "[agent_centered] Skipping stale prediction (age=%.0fms > max=%.0fms)",
+                        if (model_worker_) {
+                            auto result = model_worker_->getLatestResult();
+                            if (result.valid) {
+                                pred_grids = std::move(result.pred_grids);
+                                infer_ms = result.inference_ms;
+                                pred_input_time = result.input_time;
+                                have_pred = true;
+                            }
+                        } else if (predicted_agent_msg) {
+                            double max_age = get_parameter("max_prediction_age_ms").as_double();
+                            bool pred_fresh = true;
+                            double actual_age_ms = -1.0;
+                            if (snap_have_pred_receive && max_age > 0) {
+                                using MsD = std::chrono::duration<double, std::milli>;
+                                actual_age_ms = std::chrono::duration_cast<MsD>(
+                                    std::chrono::steady_clock::now() - snap_pred_receive_time).count();
+                                pred_fresh = (actual_age_ms <= max_age);
+                            }
+                            if (pred_fresh) {
+                                pred_grids = agentCenteredInputToMats(*predicted_agent_msg);
+                                infer_ms = snap_model_inference_ms;
+                                pred_input_time = snap_pred_receive_time;
+                                have_pred = !pred_grids.empty();
+                            } else {
+                                RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
+                                    "[agent_centered] Skipping stale prediction (age=%.0fms > max=%.0fms)",
                                 actual_age_ms, max_age);
                         }
                         logPredictionLatency("agent_centered", snap_have_pred_receive,
@@ -1229,8 +1238,12 @@ private:
                         }
                     }
                 }
-                if (overlay_live_scans_with_model && !live_grid.empty()) {
-                    combined = bridge_.mergeWithStaticMap(cv::max(combined, live_grid));
+                    if (overlay_live_scans_with_model && !live_grid.empty()) {
+                        combined = bridge_.mergeWithStaticMap(cv::max(combined, live_grid));
+                    }
+                } else {
+                    combined = bridge_.mergeWithStaticMap(live_grid);
+                    pred_only_ = cv::Mat();
                 }
                 publishLiveGrid(live_grid, "map", bridge_.xMin(), bridge_.yMin(), bridge_.resolution());
             } else {
@@ -1271,7 +1284,7 @@ private:
         double resolution = bridge_.resolution();
         double robot_radius_m = get_parameter("robot_radius").as_double();
         int robot_radius_px = static_cast<int>(std::round(std::max(0.0, robot_radius_m) / resolution));
-        double astar_corridor_half_width_m = get_parameter("astar_corridor_half_width").as_double();
+        double astar_corridor_half_width_m = get_parameter("astar_corridor_half_width_live").as_double();
         int astar_corridor_half_width_px = static_cast<int>(std::round(
             std::max(0.0, astar_corridor_half_width_m) / resolution));
         double required_clearance_px = static_cast<double>(robot_radius_px + astar_corridor_half_width_px);

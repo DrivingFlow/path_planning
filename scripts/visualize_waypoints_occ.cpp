@@ -4,6 +4,9 @@
 #include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <std_msgs/msg/string.hpp>
+#include <rcl_interfaces/srv/set_parameters.hpp>
+#include <rclcpp/parameter.hpp>
+#include <rclcpp/parameter_value.hpp>
 
 #include <opencv2/opencv.hpp>
 
@@ -104,9 +107,35 @@ public:
         cv::setMouseCallback(window_name_, &WaypointsOccVisualizer::onMouse, this);
         RCLCPP_INFO(get_logger(),
             "Click=drag region to zoom | R=reset full view | F=toggle follow robot | Left-click=set goal");
+        RCLCPP_INFO(get_logger(),
+            "M=toggle model overlay | W/S=corridor width +/-0.01m");
+
+        param_client_ = create_client<rcl_interfaces::srv::SetParameters>("/path_planner/set_parameters");
     }
 
 private:
+    void setRemoteParam(const std::string& name, bool value) {
+        if (!param_client_ || !param_client_->service_is_ready()) return;
+        auto req = std::make_shared<rcl_interfaces::srv::SetParameters::Request>();
+        rcl_interfaces::msg::Parameter p;
+        p.name = name;
+        p.value.type = rcl_interfaces::msg::ParameterType::PARAMETER_BOOL;
+        p.value.bool_value = value;
+        req->parameters.push_back(p);
+        param_client_->async_send_request(req);
+    }
+
+    void setRemoteParam(const std::string& name, double value) {
+        if (!param_client_ || !param_client_->service_is_ready()) return;
+        auto req = std::make_shared<rcl_interfaces::srv::SetParameters::Request>();
+        rcl_interfaces::msg::Parameter p;
+        p.name = name;
+        p.value.type = rcl_interfaces::msg::ParameterType::PARAMETER_DOUBLE;
+        p.value.double_value = value;
+        req->parameters.push_back(p);
+        param_client_->async_send_request(req);
+    }
+
     void onOcc(const nav_msgs::msg::OccupancyGrid::SharedPtr msg) {
         std::lock_guard<std::mutex> lock(mutex_);
         occ_.width = static_cast<int>(msg->info.width);
@@ -591,9 +620,9 @@ private:
         cv::Mat side_panel(display_occ.rows, side_w, CV_8UC3, cv::Scalar(245, 245, 245));
         cv::line(side_panel, cv::Point(0, 0), cv::Point(0, side_panel.rows - 1), cv::Scalar(180, 180, 180), 1);
 
-        int y = 42;
-        const int line_h = 39;
-        const double font = 1;
+        int y = 22;
+        const int line_h = 22;
+        const double font = 0.5;
         auto put_line = [&](const std::string& text, const cv::Scalar& color = cv::Scalar(20, 20, 20)) {
             if (y < side_panel.rows - 8) {
                 cv::putText(side_panel, text, cv::Point(12, y), cv::FONT_HERSHEY_SIMPLEX, font, color, 1, cv::LINE_AA);
@@ -626,6 +655,11 @@ private:
         } else {
             put_line("No planner status yet");
         }
+        y += 8;
+        put_line("--- Live Controls ---", cv::Scalar(120, 0, 120));
+        put_line("M: Model overlay " + std::string(use_model_overlay_ ? "ON" : "OFF"),
+                 use_model_overlay_ ? cv::Scalar(0, 120, 0) : cv::Scalar(0, 0, 180));
+        put_line(cv::format("W/S: Corridor width %.2f m", corridor_width_cm_ * 0.01));
 
         cv::Mat display;
         cv::hconcat(display_occ, side_panel, display);
@@ -646,6 +680,18 @@ private:
             follow_robot_ = !follow_robot_;
             view_mode_ = follow_robot_ ? ViewMode::FOLLOW : view_mode_;
             RCLCPP_INFO(get_logger(), "Follow robot: %s", follow_robot_ ? "ON" : "OFF");
+        } else if (key == 'm' || key == 'M') {
+            use_model_overlay_ = !use_model_overlay_;
+            setRemoteParam("use_model_overlay", use_model_overlay_);
+            RCLCPP_INFO(get_logger(), "Model overlay: %s", use_model_overlay_ ? "ON" : "OFF");
+        } else if (key == 'w' || key == 'W') {
+            corridor_width_cm_ = std::min(corridor_width_cm_ + 1, 100);
+            setRemoteParam("astar_corridor_half_width_live", corridor_width_cm_ * 0.01);
+            RCLCPP_INFO(get_logger(), "Corridor half-width: %.2f m", corridor_width_cm_ * 0.01);
+        } else if (key == 's' || key == 'S') {
+            corridor_width_cm_ = std::max(corridor_width_cm_ - 1, 0);
+            setRemoteParam("astar_corridor_half_width_live", corridor_width_cm_ * 0.01);
+            RCLCPP_INFO(get_logger(), "Corridor half-width: %.2f m", corridor_width_cm_ * 0.01);
         }
     }
 
@@ -699,6 +745,11 @@ private:
     int last_occ_panel_width_ = 0;
     int last_occ_panel_height_ = 0;
     double display_scale_ = 1.0;
+
+    // Live controls
+    rclcpp::Client<rcl_interfaces::srv::SetParameters>::SharedPtr param_client_;
+    bool use_model_overlay_ = true;
+    int corridor_width_cm_ = 20;  // in centimeters, displayed as meters (20 = 0.20m)
 };
 
 int main(int argc, char** argv) {

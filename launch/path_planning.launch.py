@@ -17,6 +17,8 @@ def generate_launch_description():
     origin_crop_lateral_offset = LaunchConfiguration("origin_crop_lateral_offset")
     crop_origin_in_model_input = LaunchConfiguration("crop_origin_in_model_input")
     astar_corridor_half_width = LaunchConfiguration("astar_corridor_half_width")
+    use_model_overlay = LaunchConfiguration("use_model_overlay", default="True")
+    astar_corridor_half_width_live = LaunchConfiguration("astar_corridor_half_width_live", default="0.20")
     rrt_iterations = LaunchConfiguration("rrt_iterations")
     step_size = LaunchConfiguration("step_size")
     rrt_goal_sample_rate = LaunchConfiguration("rrt_goal_sample_rate")
@@ -93,6 +95,10 @@ def generate_launch_description():
             DeclareLaunchArgument("crop_origin_in_model_input", default_value="False"),
             # A* only: additional corridor half-width around centerline (meters)
             DeclareLaunchArgument("astar_corridor_half_width", default_value="0.0"),
+            # Toggle model prediction overlay on/off at runtime (only relevant in model modes)
+            DeclareLaunchArgument("use_model_overlay", default_value="True"),
+            # Live-adjustable A* corridor half-width (meters); changed via visualizer W/S keys
+            DeclareLaunchArgument("astar_corridor_half_width_live", default_value="0.20"),
             # Number of RRT iterations for path planning
             DeclareLaunchArgument("rrt_iterations", default_value="10000"),
             # Step size for RRT tree expansion (meters)
@@ -199,6 +205,8 @@ def generate_launch_description():
                         "origin_crop_lateral_offset": origin_crop_lateral_offset,
                         "crop_origin_in_model_input": crop_origin_in_model_input,
                         "astar_corridor_half_width": astar_corridor_half_width,
+                        "use_model_overlay": use_model_overlay,
+                        "astar_corridor_half_width_live": astar_corridor_half_width_live,
                         "rrt_iterations": rrt_iterations,
                         "step_size": step_size,
                         "rrt_goal_sample_rate": rrt_goal_sample_rate,

@@ -59,7 +59,7 @@ rosidl_target_interfaces(path_planner_node ${PROJECT_NAME} "rosidl_typesupport_c
 add_executable(visualize_waypoints_occ_cpp scripts/visualize_waypoints_occ.cpp)
 target_include_directories(visualize_waypoints_occ_cpp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${EIGEN3_INCLUDE_DIR})
 target_link_libraries(visualize_waypoints_occ_cpp ${OpenCV_LIBS})
-ament_target_dependencies(visualize_waypoints_occ_cpp rclcpp nav_msgs geometry_msgs std_msgs)
+ament_target_dependencies(visualize_waypoints_occ_cpp rclcpp nav_msgs geometry_msgs std_msgs rcl_interfaces)
 
 install(TARGETS path_planner_node
   DESTINATION lib/${PROJECT_NAME})
