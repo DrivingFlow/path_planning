@@ -124,9 +124,29 @@ public:
         declare_parameter<double>("local_replan_radius", 5.0);
         // Maximum distance (m) from robot for live scan points; 0 = no limit
         declare_parameter<double>("live_scan_radius", 0.0);
+        // Door toggle: swap between two static map PNGs at runtime
+        declare_parameter<bool>("door_toggle_enabled", false);
+        declare_parameter<std::string>("door_toggle_maps", "");
 
         std::string map_pcd = get_parameter("map_pcd_path").as_string();
         std::string map_png = get_parameter("map_png_path").as_string();
+        bool door_toggle = get_parameter("door_toggle_enabled").as_bool();
+        if (door_toggle) {
+            std::string maps_str = get_parameter("door_toggle_maps").as_string();
+            auto comma = maps_str.find(',');
+            if (comma != std::string::npos) {
+                door_map_1_ = maps_str.substr(0, comma);
+                door_map_2_ = maps_str.substr(comma + 1);
+                while (!door_map_1_.empty() && door_map_1_.front() == ' ') door_map_1_.erase(0, 1);
+                while (!door_map_2_.empty() && door_map_2_.front() == ' ') door_map_2_.erase(0, 1);
+                map_png = door_map_1_;
+                RCLCPP_INFO(get_logger(), "Door toggle enabled: map1=%s, map2=%s",
+                    door_map_1_.c_str(), door_map_2_.c_str());
+            } else {
+                RCLCPP_WARN(get_logger(), "door_toggle_maps must be two comma-separated paths; disabling toggle.");
+                door_toggle = false;
+            }
+        }
         if (map_pcd.empty() || map_png.empty()) {
             RCLCPP_WARN(get_logger(), "map_pcd_path or map_png_path not set; bridge will not be ready.");
         } else {
@@ -151,6 +171,13 @@ public:
             "/goal_pose", qos_be, [this](const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
                 onGoal(msg);
             });
+
+        if (door_toggle) {
+            sub_door_toggle_ = create_subscription<std_msgs::msg::String>(
+                "/door_toggle", qos_be, [this](const std_msgs::msg::String::SharedPtr msg) {
+                    onDoorToggle(msg);
+                });
+        }
 
         std::string mode = get_parameter("occ_data_mode").as_string();
         bool use_in_process = get_parameter("use_in_process_model").as_bool();
@@ -330,6 +357,23 @@ private:
         have_goal_ = true;
         goal_changed_ = true;
         RCLCPP_INFO(get_logger(), "Received goal pose: x=%.3f, y=%.3f", goal_x_, goal_y_);
+    }
+
+    void onDoorToggle(const std_msgs::msg::String::SharedPtr msg) {
+        std::string which_map = (msg->data == "2") ? door_map_2_ : door_map_1_;
+        if (which_map.empty()) return;
+        RCLCPP_INFO(get_logger(), "Door toggle -> loading map: %s", which_map.c_str());
+        if (!bridge_.loadEditedMapPng(which_map)) {
+            RCLCPP_ERROR(get_logger(), "Failed to load toggle map PNG: %s", which_map.c_str());
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            map_changed_ = true;
+            have_cached_combined_grid_ = false;
+            current_path_.clear();
+        }
+        RCLCPP_INFO(get_logger(), "Static map swapped, forcing replan.");
     }
 
     void onPredictedGrids(const path_planning::msg::OccupancyGridArray::SharedPtr msg) {
@@ -896,6 +940,7 @@ private:
         std::vector<std::array<float, 3>> live_pts;
         bool has_new_lidar_data = false;
         bool goal_changed = false;
+        bool map_changed = false;
         double start_x, start_y, goal_x, goal_y;
         double start_z, start_roll, start_pitch, start_yaw;
         bool have_pose, have_goal;
@@ -916,6 +961,8 @@ private:
             }
             goal_changed = goal_changed_;
             goal_changed_ = false;
+            map_changed = map_changed_;
+            map_changed_ = false;
             start_x = start_x_;
             start_y = start_y_;
             start_z = start_z_;
@@ -1318,6 +1365,12 @@ private:
             replan_reason = "new_goal";
             RCLCPP_INFO(get_logger(), "New goal received, replanning immediately.");
         }
+        // Immediate replan: static map changed (door toggle)
+        if (!needs_replan && map_changed) {
+            needs_replan = true;
+            replan_reason = "map_changed";
+            RCLCPP_INFO(get_logger(), "Static map changed (door toggle), replanning immediately.");
+        }
         // Immediate replan: intersection within lookahead
         // Only compute the expensive distance transform when we actually need intersection checking
         cv::Mat dist_map;
@@ -1546,6 +1599,7 @@ private:
     double start_roll_ = 0, start_pitch_ = 0, start_yaw_ = 0;
     bool have_pose_ = false, have_goal_ = false;
     bool goal_changed_ = false;
+    bool map_changed_ = false;
     std::vector<std::array<double, 2>> current_path_;
     rclcpp::Time last_plan_time_{0};
     cv::Mat cached_combined_grid_;
@@ -1557,6 +1611,11 @@ private:
     std::deque<EgoFrame> queue_ego_frames_;
     double anchor_x_ = 0, anchor_y_ = 0, anchor_yaw_ = 0;
     cv::Mat pred_only_;
+
+    // Door toggle
+    rclcpp::Subscription<std_msgs::msg::String>::SharedPtr sub_door_toggle_;
+    std::string door_map_1_;
+    std::string door_map_2_;
 
     // In-process TorchScript model inference
     std::unique_ptr<ModelWorker> model_worker_;

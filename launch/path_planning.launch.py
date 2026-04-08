@@ -29,6 +29,8 @@ def generate_launch_description():
     local_replan_radius = LaunchConfiguration("local_replan_radius")
     live_scan_radius = LaunchConfiguration("live_scan_radius")
     min_replan_obstacle_size = LaunchConfiguration("min_replan_obstacle_size")
+    door_toggle_enabled = LaunchConfiguration("door_toggle_enabled")
+    door_toggle_maps = LaunchConfiguration("door_toggle_maps")
 
     lidar_topic = LaunchConfiguration("lidar_topic")
     pose_topic = LaunchConfiguration("pose_topic")
@@ -119,6 +121,10 @@ def generate_launch_description():
             DeclareLaunchArgument("live_scan_radius", default_value="5.0"),
             # Minimum obstacle blob size (pixels) to trigger intersection-based replanning; smaller blobs are ignored. 0 = disabled.
             DeclareLaunchArgument("min_replan_obstacle_size", default_value="0"),
+            # Enable door toggle: press 'o' in visualizer to swap between two static map PNGs
+            DeclareLaunchArgument("door_toggle_enabled", default_value="True"),
+            # Comma-separated pair of PNG paths for door toggle (map1,map2)
+            DeclareLaunchArgument("door_toggle_maps", default_value="/home/unitree/path_planning/src/path_planning/utils/plab_03_07_3_rotated_toggle1.png,/home/unitree/path_planning/src/path_planning/utils/plab_03_07_3_rotated_toggle2.png"),
             # Topic name for LIDAR point cloud input
             DeclareLaunchArgument("lidar_topic", default_value="/livox/lidar"),
             # Topic name for robot pose input
@@ -217,6 +223,8 @@ def generate_launch_description():
                         "local_replan_radius": local_replan_radius,
                         "live_scan_radius": live_scan_radius,
                         "min_replan_obstacle_size": min_replan_obstacle_size,
+                        "door_toggle_enabled": door_toggle_enabled,
+                        "door_toggle_maps": door_toggle_maps,
                         "sample_col_min": sample_col_min,
                         "sample_col_max": sample_col_max,
                         "sample_row_min": sample_row_min,
@@ -300,6 +308,7 @@ def generate_launch_description():
                         "show_agent_centered_roi": show_agent_centered_roi,
                         "show_robot_marker": show_robot_marker,
                         "show_goal_marker": show_goal_marker,
+                        "door_toggle_enabled": door_toggle_enabled,
                     }
                 ],
                 condition=IfCondition(

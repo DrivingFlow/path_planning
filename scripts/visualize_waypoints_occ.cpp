@@ -107,8 +107,14 @@ public:
         cv::setMouseCallback(window_name_, &WaypointsOccVisualizer::onMouse, this);
         RCLCPP_INFO(get_logger(),
             "Click=drag region to zoom | R=reset full view | F=toggle follow robot | Left-click=set goal");
+        door_toggle_enabled_ = declare_parameter<bool>("door_toggle_enabled", false);
+        if (door_toggle_enabled_) {
+            pub_door_toggle_ = create_publisher<std_msgs::msg::String>("/door_toggle", qos_be);
+        }
+
         RCLCPP_INFO(get_logger(),
-            "M=toggle model overlay | W/S=corridor width +/-0.01m");
+            "M=toggle model overlay | W/S=corridor width +/-0.01m%s",
+            door_toggle_enabled_ ? " | O=toggle door map" : "");
 
         param_client_ = create_client<rcl_interfaces::srv::SetParameters>("/path_planner/set_parameters");
     }
@@ -660,6 +666,10 @@ private:
         put_line("M: Model overlay " + std::string(use_model_overlay_ ? "ON" : "OFF"),
                  use_model_overlay_ ? cv::Scalar(0, 120, 0) : cv::Scalar(0, 0, 180));
         put_line(cv::format("W/S: Corridor width %.2f m", corridor_width_cm_ * 0.01));
+        if (door_toggle_enabled_) {
+            put_line("O: Door map " + std::to_string(door_map_index_),
+                     door_map_index_ == 1 ? cv::Scalar(0, 120, 0) : cv::Scalar(180, 0, 0));
+        }
 
         cv::Mat display;
         cv::hconcat(display_occ, side_panel, display);
@@ -692,6 +702,12 @@ private:
             corridor_width_cm_ = std::max(corridor_width_cm_ - 1, 0);
             setRemoteParam("astar_corridor_half_width_live", corridor_width_cm_ * 0.01);
             RCLCPP_INFO(get_logger(), "Corridor half-width: %.2f m", corridor_width_cm_ * 0.01);
+        } else if ((key == 'o' || key == 'O') && door_toggle_enabled_ && pub_door_toggle_) {
+            door_map_index_ = (door_map_index_ == 1) ? 2 : 1;
+            std_msgs::msg::String msg;
+            msg.data = std::to_string(door_map_index_);
+            pub_door_toggle_->publish(msg);
+            RCLCPP_INFO(get_logger(), "Door toggle -> map %d", door_map_index_);
         }
     }
 
@@ -750,6 +766,11 @@ private:
     rclcpp::Client<rcl_interfaces::srv::SetParameters>::SharedPtr param_client_;
     bool use_model_overlay_ = true;
     int corridor_width_cm_ = 20;  // in centimeters, displayed as meters (20 = 0.20m)
+
+    // Door toggle
+    bool door_toggle_enabled_ = false;
+    int door_map_index_ = 1;
+    rclcpp::Publisher<std_msgs::msg::String>::SharedPtr pub_door_toggle_;
 };
 
 int main(int argc, char** argv) {

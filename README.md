@@ -93,6 +93,13 @@ source install/setup.bash
 | `local_replan_enabled` | bool | `False` | If true, intersection-triggered replans only replan the path within `local_replan_radius` of the robot and splice with the original tail. |
 | `local_replan_radius` | double | `5.0` | Radius (meters) for local replanning. The planner targets the existing path point at this distance from the robot. |
 
+### Door Toggle
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `door_toggle_enabled` | bool | `True` | If true, enables switching between two static map PNGs at runtime via the 'O' key in the visualizer. When a toggle occurs the planner immediately replans. |
+| `door_toggle_maps` | string | *(see launch)* | Comma-separated pair of PNG file paths for the two door configurations (e.g. `map_door1.png,map_door2.png`). The first map is loaded on startup; pressing 'O' alternates between the two. |
+
 ### Sampling Bounds
 
 | Parameter | Type | Default | Description |
@@ -156,8 +163,9 @@ The planner triggers a replan under the following conditions (in priority order)
 
 1. **No current path** – always plans immediately.
 2. **New goal received** – replans immediately when a new `/goal_pose` message arrives.
-3. **Obstacle intersection** – replans immediately when the current path intersects obstacles within `replan_lookahead_distance`. If `local_replan_enabled` is true, only the portion of the path within `local_replan_radius` is replanned (the rest of the original path is preserved).
-4. **Periodic timer** – replans every `replan_interval_sec` seconds if no other trigger fires.
+3. **Static map changed (door toggle)** – replans immediately when the static map PNG is swapped via the door toggle.
+4. **Obstacle intersection** – replans immediately when the current path intersects obstacles within `replan_lookahead_distance`. If `local_replan_enabled` is true, only the portion of the path within `local_replan_radius` is replanned (the rest of the original path is preserved).
+5. **Periodic timer** – replans every `replan_interval_sec` seconds if no other trigger fires.
 
 If none of the above conditions are met, the planner publishes a "tracking/path_clear" status and skips the planning cycle.
 
