@@ -140,7 +140,7 @@ def generate_launch_description():
             # Topic name for publishing planner status text for visualization
             DeclareLaunchArgument("planner_status_topic", default_value="/planner_status"),
             # Enable visualization of path and occupancy grid (requires X display)
-            DeclareLaunchArgument("visualize", default_value="False"),
+            DeclareLaunchArgument("visualize", default_value="True"),
             # Visualization update rate (Hz)
             DeclareLaunchArgument("viz_rate", default_value="10.0"),
             # Visualizer type: 'cpp' or 'python'
