@@ -188,7 +188,7 @@ private:
                 for (int r = 0; r < GRID_SIZE; ++r) {
                     uchar* row = m.ptr<uchar>(r);
                     for (int c = 0; c < GRID_SIZE; ++c) {
-                        row[c] = pred_acc[t][r][c] > 0.8f ? 255 : 0;
+                        row[c] = pred_acc[t][r][c] > 0.9f ? 255 : 0;
                     }
                 }
                 result.pred_grids.push_back(std::move(m));
