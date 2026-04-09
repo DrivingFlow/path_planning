@@ -76,9 +76,9 @@ def generate_launch_description():
     return LaunchDescription(
         [
             # Path to the PCD map file
-            DeclareLaunchArgument("map_pcd_path", default_value="/home/unitree/path_planning/src/path_planning/utils/plab_03_07_3_rotated.pcd"),
+            DeclareLaunchArgument("map_pcd_path", default_value="/home/unitree/path_planning/src/path_planning/utils/alumni_final_1_rotated.pcd"),
             # Path to the PNG occupancy grid map file
-            DeclareLaunchArgument("map_png_path", default_value="/home/unitree/path_planning/src/path_planning/utils/plab_03_07_3_rotated.png"),
+            DeclareLaunchArgument("map_png_path", default_value="/home/unitree/path_planning/src/path_planning/utils/alumni_final_1_rotated_toggle1.png"),
             # Resolution of the occupancy grid (meters per cell)
             DeclareLaunchArgument("resolution", default_value="0.05"),
             # Minimum z-coordinate for obstacle detection (meters)
@@ -124,7 +124,7 @@ def generate_launch_description():
             # Enable door toggle: press 'o' in visualizer to swap between two static map PNGs
             DeclareLaunchArgument("door_toggle_enabled", default_value="True"),
             # Comma-separated pair of PNG paths for door toggle (map1,map2)
-            DeclareLaunchArgument("door_toggle_maps", default_value="/home/unitree/path_planning/src/path_planning/utils/plab_03_07_3_rotated_toggle1.png,/home/unitree/path_planning/src/path_planning/utils/plab_03_07_3_rotated_toggle2.png"),
+            DeclareLaunchArgument("door_toggle_maps", default_value="/home/unitree/path_planning/src/path_planning/utils/alumni_final_1_rotated_toggle1.png,/home/unitree/path_planning/src/path_planning/utils/alumni_final_1_rotated_toggle2.png"),
             # Topic name for LIDAR point cloud input
             DeclareLaunchArgument("lidar_topic", default_value="/livox/lidar"),
             # Topic name for robot pose input

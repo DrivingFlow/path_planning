@@ -84,6 +84,8 @@ public:
                 });
             pub_goal_ = create_publisher<geometry_msgs::msg::PoseStamped>(goal_topic, qos_be);
         }
+        pub_initial_pose_ = create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>("/initialpose", qos_be);
+
         if (!planner_status_topic.empty()) {
             sub_planner_status_ = create_subscription<std_msgs::msg::String>(
                 planner_status_topic, qos_be,
@@ -106,7 +108,7 @@ public:
         cv::resizeWindow(window_name_, 900, 900);
         cv::setMouseCallback(window_name_, &WaypointsOccVisualizer::onMouse, this);
         RCLCPP_INFO(get_logger(),
-            "Click=drag region to zoom | R=reset full view | F=toggle follow robot | Left-click=set goal");
+            "Click=drag region to zoom | R=reset full view | F=toggle follow robot | Left-click=set goal | Z=2D pose estimate");
         door_toggle_enabled_ = declare_parameter<bool>("door_toggle_enabled", false);
         if (door_toggle_enabled_) {
             pub_door_toggle_ = create_publisher<std_msgs::msg::String>("/door_toggle", qos_be);
@@ -209,6 +211,39 @@ private:
         int ix = static_cast<int>(x / s);
         int iy = static_cast<int>(y / s);
 
+        // --- 2D Pose Estimate mode: click-drag draws heading arrow ---
+        if (self->pose_estimate_mode_) {
+            if (event == cv::EVENT_LBUTTONDOWN) {
+                self->pose_start_x_ = ix;
+                self->pose_start_y_ = iy;
+                self->pose_end_x_ = ix;
+                self->pose_end_y_ = iy;
+                self->pose_drag_active_ = true;
+                return;
+            }
+            if (event == cv::EVENT_LBUTTONUP) {
+                if (self->pose_drag_active_) {
+                    self->pose_end_x_ = ix;
+                    self->pose_end_y_ = iy;
+                    self->pose_drag_active_ = false;
+                    self->has_pose_estimate_ = true;
+                    self->pose_estimate_mode_ = false;
+                }
+                return;
+            }
+            if (event == cv::EVENT_MOUSEMOVE) {
+                if (self->pose_drag_active_) {
+                    self->pose_end_x_ = ix;
+                    self->pose_end_y_ = iy;
+                }
+                self->mouse_x_ = ix;
+                self->mouse_y_ = iy;
+                self->has_mouse_ = true;
+            }
+            return;
+        }
+
+        // --- Normal mode: drag-to-zoom or click-to-set-goal ---
         if (event == cv::EVENT_LBUTTONDOWN) {
             self->drag_start_x_ = ix;
             self->drag_start_y_ = iy;
@@ -486,6 +521,54 @@ private:
             goal_pose_ = world_pos;
         }
 
+        // Handle 2D Pose Estimate (arrow drag → publish /initialpose)
+        {
+            int pe_sx = -1, pe_sy = -1, pe_ex = -1, pe_ey = -1;
+            bool do_publish_pose = false;
+            {
+                std::lock_guard<std::mutex> lock(mouse_mutex_);
+                if (has_pose_estimate_) {
+                    pe_sx = pose_start_x_;
+                    pe_sy = pose_start_y_;
+                    pe_ex = pose_end_x_;
+                    pe_ey = pose_end_y_;
+                    has_pose_estimate_ = false;
+                    do_publish_pose = true;
+                }
+            }
+            if (do_publish_pose && pe_sx >= 0 && pe_sy >= 0 &&
+                pe_sx < occ_width && pe_sy < occ_height && pub_initial_pose_) {
+                int col_s = col_min + pe_sx;
+                int row_s = row_min + pe_sy;
+                cv::Point2d pos = pixelToWorld(occ, col_s, row_s);
+
+                int col_e = col_min + pe_ex;
+                int row_e = row_min + pe_ey;
+                cv::Point2d pos_end = pixelToWorld(occ, col_e, row_e);
+                double yaw = std::atan2(pos_end.y - pos.y, pos_end.x - pos.x);
+
+                auto pose_msg = geometry_msgs::msg::PoseWithCovarianceStamped();
+                pose_msg.header.stamp = now();
+                pose_msg.header.frame_id = "map";
+                pose_msg.pose.pose.position.x = pos.x;
+                pose_msg.pose.pose.position.y = pos.y;
+                pose_msg.pose.pose.position.z = 0.0;
+                pose_msg.pose.pose.orientation.x = 0.0;
+                pose_msg.pose.pose.orientation.y = 0.0;
+                pose_msg.pose.pose.orientation.z = std::sin(yaw / 2.0);
+                pose_msg.pose.pose.orientation.w = std::cos(yaw / 2.0);
+                pose_msg.pose.covariance.fill(0.0);
+                pose_msg.pose.covariance[0]  = 0.25;   // x variance
+                pose_msg.pose.covariance[7]  = 0.25;   // y variance
+                pose_msg.pose.covariance[35] = 0.068;   // yaw variance (~15 deg)
+
+                pub_initial_pose_->publish(pose_msg);
+                RCLCPP_INFO(get_logger(),
+                    "Initial pose estimate: (%.2f, %.2f) yaw=%.1f deg",
+                    pos.x, pos.y, yaw * 180.0 / M_PI);
+            }
+        }
+
         int mouse_x = -1;
         int mouse_y = -1;
         {
@@ -507,10 +590,22 @@ private:
             mouse_xy = "Mouse x,y: " + cv::format("%.2f, %.2f", wp.x, wp.y);
         }
 
-        // Draw drag selection rectangle while dragging
+        // Draw drag selection rectangle while dragging (normal mode)
+        // or draw pose estimate arrow while dragging (pose estimate mode)
         {
             std::lock_guard<std::mutex> lock(mouse_mutex_);
-            if (is_dragging_ && last_occ_panel_width_ > 0 && last_occ_panel_height_ > 0) {
+            if (pose_drag_active_) {
+                cv::Point arrow_start(pose_start_x_, pose_start_y_);
+                cv::Point arrow_end(pose_end_x_, pose_end_y_);
+                cv::circle(view_occ, arrow_start, 5, cv::Scalar(0, 165, 255), -1);
+                cv::arrowedLine(view_occ, arrow_start, arrow_end,
+                                cv::Scalar(0, 165, 255), 2, cv::LINE_AA, 0, 0.3);
+                if (show_energy_map_ && !view_energy.empty()) {
+                    cv::circle(view_energy, arrow_start, 5, cv::Scalar(0, 165, 255), -1);
+                    cv::arrowedLine(view_energy, arrow_start, arrow_end,
+                                    cv::Scalar(0, 165, 255), 2, cv::LINE_AA, 0, 0.3);
+                }
+            } else if (is_dragging_ && last_occ_panel_width_ > 0 && last_occ_panel_height_ > 0) {
                 int x0 = std::max(0, std::min(drag_start_x_, drag_end_x_));
                 int x1 = std::min(occ_width - 1, std::max(drag_start_x_, drag_end_x_));
                 int y0 = std::max(0, std::min(drag_start_y_, drag_end_y_));
@@ -666,6 +761,11 @@ private:
         put_line("M: Model overlay " + std::string(use_model_overlay_ ? "ON" : "OFF"),
                  use_model_overlay_ ? cv::Scalar(0, 120, 0) : cv::Scalar(0, 0, 180));
         put_line(cv::format("W/S: Corridor width %.2f m", corridor_width_cm_ * 0.01));
+        if (pose_estimate_mode_) {
+            put_line("Z: POSE ESTIMATE (click & drag arrow)", cv::Scalar(0, 120, 255));
+        } else {
+            put_line("Z: Enter pose estimate mode");
+        }
         if (door_toggle_enabled_) {
             put_line("O: Door map " + std::to_string(door_map_index_),
                      door_map_index_ == 1 ? cv::Scalar(0, 120, 0) : cv::Scalar(180, 0, 0));
@@ -708,6 +808,12 @@ private:
             msg.data = std::to_string(door_map_index_);
             pub_door_toggle_->publish(msg);
             RCLCPP_INFO(get_logger(), "Door toggle -> map %d", door_map_index_);
+        } else if (key == 'z' || key == 'Z') {
+            std::lock_guard<std::mutex> lock(mouse_mutex_);
+            pose_estimate_mode_ = !pose_estimate_mode_;
+            if (!pose_estimate_mode_) pose_drag_active_ = false;
+            RCLCPP_INFO(get_logger(), "2D Pose Estimate mode: %s",
+                        pose_estimate_mode_ ? "ON (click and drag to set heading)" : "OFF");
         }
     }
 
@@ -766,6 +872,14 @@ private:
     rclcpp::Client<rcl_interfaces::srv::SetParameters>::SharedPtr param_client_;
     bool use_model_overlay_ = true;
     int corridor_width_cm_ = 20;  // in centimeters, displayed as meters (20 = 0.20m)
+
+    // 2D Pose Estimate (like RViz's "2D Pose Estimate" button)
+    bool pose_estimate_mode_ = false;
+    bool pose_drag_active_ = false;
+    bool has_pose_estimate_ = false;
+    int pose_start_x_ = 0, pose_start_y_ = 0;
+    int pose_end_x_ = 0, pose_end_y_ = 0;
+    rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr pub_initial_pose_;
 
     // Door toggle
     bool door_toggle_enabled_ = false;
